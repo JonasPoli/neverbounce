@@ -16,6 +16,7 @@ build/
 
 # ── Banco de dados ──────────────────────────
 database.db
+database.db-*
 *.sqlite
 *.sqlite3
 
