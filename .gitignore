@@ -1,0 +1,47 @@
+# Email Validator Pro — .gitignore
+
+# ── Ambiente Python ──────────────────────────
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# ── Banco de dados ──────────────────────────
+database.db
+*.sqlite
+*.sqlite3
+
+# ── Arquivos gerados pelo sistema ──────────
+uploads/*
+exports/*
+!uploads/.gitkeep
+!exports/.gitkeep
+
+# ── Variáveis de ambiente ──────────────────
+.env
+.env.*
+
+# ── IDEs e editores ────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Logs ──────────────────────────────────
+*.log
+logs/
+
+# ── Pytest / cobertura ────────────────────
+.pytest_cache/
+.coverage
+htmlcov/

@@ -1,0 +1,29 @@
+# ──────────────────────────────────────────────
+# Email Validator Pro — requirements.txt
+# ──────────────────────────────────────────────
+
+# Framework web
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+
+# Banco de dados
+sqlalchemy==2.0.30
+
+# Templates
+jinja2==3.1.4
+
+# Upload de arquivos (multipart/form-data)
+python-multipart==0.0.9
+
+# Leitura de CSV e XLSX
+pandas==2.2.2
+openpyxl==3.1.3
+
+# DNS (resolução MX)
+dnspython==2.6.1
+
+# Arquivos estáticos (opcional, útil para produção)
+aiofiles==23.2.1
+
+# Validação de e-mail (suporte à regex e normalização)
+email-validator==2.1.1

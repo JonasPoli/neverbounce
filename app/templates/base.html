@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Email Validator Pro{% endblock %}</title>
+  <meta name="description" content="Sistema profissional de verificação e validação de e-mails com DNS, SMTP e cache global." />
+
+  <!-- Tailwind CSS via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50:  '#eef2ff',
+              100: '#e0e7ff',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+            },
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    }
+  </script>
+
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+
+  <style>
+    /* Scrollbar personalizada */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #1e1e2e; }
+    ::-webkit-scrollbar-thumb { background: #4f46e5; border-radius: 3px; }
+
+    /* Animação de fade-in suave */
+    .fade-in { animation: fadeIn 0.35s ease-in-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* Brilho sutil nos cards */
+    .card-glow:hover { box-shadow: 0 0 20px rgba(99, 102, 241, 0.15); transition: box-shadow 0.3s ease; }
+  </style>
+
+  {% block head %}{% endblock %}
+</head>
+
+<body class="h-full bg-slate-950 text-slate-200 font-sans antialiased">
+
+  <!-- Layout principal -->
+  <div class="flex h-full min-h-screen">
+
+    <!-- ── Sidebar ──────────────────────────────────────── -->
+    <aside class="w-64 flex-shrink-0 bg-slate-900 border-r border-slate-800 flex flex-col">
+
+      <!-- Logo -->
+      <div class="px-6 py-6 border-b border-slate-800">
+        <a href="/" class="flex items-center gap-3 group">
+          <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform">
+            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+          </div>
+          <div>
+            <p class="text-sm font-bold text-white tracking-tight">Email Validator</p>
+            <p class="text-xs text-indigo-400 font-medium">Pro</p>
+          </div>
+        </a>
+      </div>
+
+      <!-- Navegação -->
+      <nav class="flex-1 px-4 py-6 space-y-1">
+        <a href="/"
+           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium
+                  {% if request.url.path == '/' %}bg-indigo-600 text-white{% else %}text-slate-400 hover:bg-slate-800 hover:text-white{% endif %}
+                  transition-colors">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+          </svg>
+          Dashboard
+        </a>
+
+        <a href="/upload"
+           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium
+                  {% if request.url.path == '/upload' %}bg-indigo-600 text-white{% else %}text-slate-400 hover:bg-slate-800 hover:text-white{% endif %}
+                  transition-colors">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+          </svg>
+          Verificar E-mails
+        </a>
+      </nav>
+
+      <!-- Rodapé sidebar -->
+      <div class="px-6 py-4 border-t border-slate-800">
+        <p class="text-xs text-slate-600">Email Validator Pro v1.0</p>
+      </div>
+    </aside>
+
+    <!-- ── Conteúdo principal ────────────────────────────── -->
+    <div class="flex-1 flex flex-col min-w-0 overflow-auto">
+
+      <!-- Header -->
+      <header class="bg-slate-900/80 backdrop-blur-sm border-b border-slate-800 px-8 py-4 flex items-center justify-between sticky top-0 z-10">
+        <div>
+          <h1 class="text-lg font-semibold text-white">{% block page_title %}Dashboard{% endblock %}</h1>
+          <p class="text-xs text-slate-500">{% block page_subtitle %}{% endblock %}</p>
+        </div>
+        <a href="/upload"
+           class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors shadow-lg shadow-indigo-900/30">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+          </svg>
+          Nova Verificação
+        </a>
+      </header>
+
+      <!-- Conteúdo da página -->
+      <main class="flex-1 p-8 fade-in">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+
+  </div>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

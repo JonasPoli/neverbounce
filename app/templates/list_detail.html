@@ -1,0 +1,428 @@
+{% extends "base.html" %}
+
+{% block title %}{{ email_list.name }} — Email Validator Pro{% endblock %}
+{% block page_title %}{{ email_list.name }}{% endblock %}
+{% block page_subtitle %}Criada em {{ email_list.created_at.strftime('%d/%m/%Y às %H:%M') }}{% endblock %}
+
+{% block content %}
+
+<!-- ── Header de informações da lista ────────────────────────────── -->
+<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+
+  <!-- Cards de resumo -->
+  <div class="flex flex-wrap gap-3">
+
+    <!-- Status badge -->
+    <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 text-sm">
+      <span class="text-slate-500">Status:</span>
+      {% if email_list.status == 'COMPLETED' %}
+        <span class="flex items-center gap-1.5 text-emerald-400 font-medium">
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span> Concluída
+        </span>
+      {% elif email_list.status == 'PROCESSING' %}
+        <span class="flex items-center gap-1.5 text-blue-400 font-medium">
+          <span class="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span> Processando
+        </span>
+      {% elif email_list.status == 'PENDING' %}
+        <span class="flex items-center gap-1.5 text-slate-400 font-medium">
+          <span class="w-2 h-2 rounded-full bg-slate-400"></span> Pendente
+        </span>
+      {% elif email_list.status == 'FAILED' %}
+        <span class="flex items-center gap-1.5 text-red-400 font-medium">
+          <span class="w-2 h-2 rounded-full bg-red-400"></span> Falha
+        </span>
+      {% endif %}
+    </div>
+
+    <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 text-sm">
+      <span class="text-slate-500">Total:</span>
+      <span class="text-white font-medium">{{ email_list.total_emails }} e-mails</span>
+    </div>
+
+    <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 text-sm">
+      <span class="text-slate-500">Processados:</span>
+      <span class="text-white font-medium">{{ email_list.processed_count }}</span>
+    </div>
+
+    {% if email_list.force_check %}
+    <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-900/30 border border-amber-800 text-xs text-amber-300">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+      </svg>
+      Cache ignorado
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Botão de exportação -->
+  {% if email_list.status == 'COMPLETED' %}
+  <a href="/lists/{{ email_list.id }}/export"
+     class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium transition-colors flex-shrink-0">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+    </svg>
+    Exportar CSV
+  </a>
+  {% endif %}
+</div>
+
+<!-- ── Barra de progresso com ETA ───────────────────────────────── -->
+{% if email_list.status in ['PENDING', 'PROCESSING'] %}
+<div id="progress-section" class="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
+
+  <!-- Linha 1: título + contagem + percentual -->
+  <div class="flex items-center justify-between mb-3">
+    <span class="text-sm font-medium text-slate-300">Progresso da verificação</span>
+    <span id="progress-text" class="text-sm font-semibold text-white">
+      {{ email_list.processed_count }}<span class="text-slate-500 font-normal">/{{ email_list.total_emails }}</span>
+    </span>
+  </div>
+
+  <!-- Barra de progresso -->
+  <div class="w-full bg-slate-800 rounded-full h-2.5 mb-3">
+    {% set pct = (email_list.processed_count / email_list.total_emails * 100) if email_list.total_emails > 0 else 0 %}
+    <div id="progress-bar"
+         class="h-2.5 rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-700"
+         style="width: {{ pct }}%">
+    </div>
+  </div>
+
+  <!-- Linha de métricas: tempo decorrido | velocidade | ETA -->
+  <div class="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
+    <span class="text-slate-500">
+      Decorrido: <strong id="elapsed-text" class="text-slate-300 font-mono">0s</strong>
+    </span>
+    <span class="text-slate-500">
+      Velocidade: <strong id="rate-text" class="text-slate-300 font-mono">—</strong>
+    </span>
+    <span class="text-slate-500">
+      Tempo restante: <strong id="eta-text" class="text-indigo-300 font-mono">calculando…</strong>
+    </span>
+    <span id="pct-text" class="ml-auto text-slate-500 font-mono">{{ "%.1f"|format(pct) }}%</span>
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Layout: Gráfico + Filtros ────────────────────────────────── -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+
+  <!-- Gráfico Donut -->
+  <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 flex flex-col items-center">
+    <h3 class="text-sm font-semibold text-white mb-4 self-start">Distribuição de Resultados</h3>
+    {% set has_chart_data = chart_data.values() | list | sum > 0 %}
+    {% if has_chart_data %}
+    <div class="relative w-48 h-48">
+      <canvas id="donutChart"></canvas>
+    </div>
+    <!-- Legenda -->
+    <div class="mt-4 grid grid-cols-2 gap-2 w-full">
+      {% if chart_data.get('VALID', 0) > 0 %}
+      <div class="flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-emerald-500 flex-shrink-0"></span>
+        <span class="text-xs text-slate-400">Válidos: <strong class="text-slate-200">{{ chart_data.get('VALID', 0) }}</strong></span>
+      </div>
+      {% endif %}
+      {% if chart_data.get('INVALID', 0) > 0 %}
+      <div class="flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-red-500 flex-shrink-0"></span>
+        <span class="text-xs text-slate-400">Inválidos: <strong class="text-slate-200">{{ chart_data.get('INVALID', 0) }}</strong></span>
+      </div>
+      {% endif %}
+      {% if chart_data.get('UNKNOWN', 0) > 0 %}
+      <div class="flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-amber-500 flex-shrink-0"></span>
+        <span class="text-xs text-slate-400">Unknown: <strong class="text-slate-200">{{ chart_data.get('UNKNOWN', 0) }}</strong></span>
+      </div>
+      {% endif %}
+      {% if chart_data.get('ACCEPT_ALL', 0) > 0 %}
+      <div class="flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-purple-500 flex-shrink-0"></span>
+        <span class="text-xs text-slate-400">Accept-All: <strong class="text-slate-200">{{ chart_data.get('ACCEPT_ALL', 0) }}</strong></span>
+      </div>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="flex flex-col items-center justify-center h-48 text-slate-600 text-sm">
+      <svg class="w-12 h-12 mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" stroke-width="1.5"/>
+        <path stroke-linecap="round" stroke-width="1.5" d="M12 7v5l3 3"/>
+      </svg>
+      Aguardando resultados...
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Filtros por status -->
+  <div class="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-6">
+    <h3 class="text-sm font-semibold text-white mb-4">Filtrar por Status</h3>
+    <div class="flex flex-wrap gap-2">
+      <a href="/lists/{{ email_list.id }}"
+         class="px-4 py-2 rounded-lg text-sm font-medium border transition-colors
+                {% if not status_filter %}bg-indigo-600 border-indigo-600 text-white{% else %}border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-200{% endif %}">
+        Todos ({{ email_list.total_emails }})
+      </a>
+      {% if chart_data.get('VALID', 0) > 0 %}
+      <a href="/lists/{{ email_list.id }}?status_filter=VALID"
+         class="px-4 py-2 rounded-lg text-sm font-medium border transition-colors
+                {% if status_filter == 'VALID' %}bg-emerald-700 border-emerald-700 text-white{% else %}border-slate-700 text-emerald-400 hover:border-emerald-700{% endif %}">
+        ✓ Válidos ({{ chart_data.get('VALID', 0) }})
+      </a>
+      {% endif %}
+      {% if chart_data.get('INVALID', 0) > 0 %}
+      <a href="/lists/{{ email_list.id }}?status_filter=INVALID"
+         class="px-4 py-2 rounded-lg text-sm font-medium border transition-colors
+                {% if status_filter == 'INVALID' %}bg-red-700 border-red-700 text-white{% else %}border-slate-700 text-red-400 hover:border-red-700{% endif %}">
+        ✗ Inválidos ({{ chart_data.get('INVALID', 0) }})
+      </a>
+      {% endif %}
+      {% if chart_data.get('UNKNOWN', 0) > 0 %}
+      <a href="/lists/{{ email_list.id }}?status_filter=UNKNOWN"
+         class="px-4 py-2 rounded-lg text-sm font-medium border transition-colors
+                {% if status_filter == 'UNKNOWN' %}bg-amber-700 border-amber-700 text-white{% else %}border-slate-700 text-amber-400 hover:border-amber-700{% endif %}">
+        ? Unknown ({{ chart_data.get('UNKNOWN', 0) }})
+      </a>
+      {% endif %}
+      {% if chart_data.get('ACCEPT_ALL', 0) > 0 %}
+      <a href="/lists/{{ email_list.id }}?status_filter=ACCEPT_ALL"
+         class="px-4 py-2 rounded-lg text-sm font-medium border transition-colors
+                {% if status_filter == 'ACCEPT_ALL' %}bg-purple-700 border-purple-700 text-white{% else %}border-slate-700 text-purple-400 hover:border-purple-700{% endif %}">
+        ⚡ Accept-All ({{ chart_data.get('ACCEPT_ALL', 0) }})
+      </a>
+      {% endif %}
+    </div>
+
+    <!-- Info de paginação -->
+    <div class="mt-4 pt-4 border-t border-slate-800 text-xs text-slate-500">
+      Exibindo <strong class="text-slate-300">{{ items|length }}</strong> de <strong class="text-slate-300">{{ total }}</strong> registros
+      {% if total_pages > 1 %} — Página <strong class="text-slate-300">{{ page }}</strong> de <strong class="text-slate-300">{{ total_pages }}</strong>{% endif %}
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Tabela de resultados ─────────────────────────────────────── -->
+<div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+  <div class="px-6 py-4 border-b border-slate-800">
+    <h3 class="text-sm font-semibold text-white">Resultados</h3>
+  </div>
+
+  {% if items %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-slate-800">
+          <th class="text-left px-6 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">#</th>
+          <th class="text-left px-6 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">E-mail</th>
+          <th class="text-left px-6 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Status</th>
+          <th class="text-left px-6 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Motivo</th>
+          <th class="text-left px-6 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Verificado em</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-800">
+        {% for item in items %}
+        <tr class="hover:bg-slate-800/40 transition-colors">
+          <td class="px-6 py-3.5 text-slate-600 text-xs">{{ loop.index + (page - 1) * per_page }}</td>
+          <td class="px-6 py-3.5 text-slate-200 font-mono text-xs">{{ item.email }}</td>
+          <td class="px-6 py-3.5">
+            {% if item.status == 'VALID' %}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-emerald-900/50 text-emerald-300 border border-emerald-800">VALID</span>
+            {% elif item.status == 'INVALID' %}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-red-900/50 text-red-300 border border-red-800">INVALID</span>
+            {% elif item.status == 'UNKNOWN' %}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-amber-900/50 text-amber-300 border border-amber-800">UNKNOWN</span>
+            {% elif item.status == 'ACCEPT_ALL' %}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-purple-900/50 text-purple-300 border border-purple-800">ACCEPT ALL</span>
+            {% else %}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700">—</span>
+            {% endif %}
+          </td>
+          <td class="px-6 py-3.5 text-slate-500 text-xs max-w-xs truncate">{{ item.reason or '—' }}</td>
+          <td class="px-6 py-3.5 text-slate-600 text-xs">
+            {% if item.checked_at %}{{ item.checked_at.strftime('%d/%m %H:%M') }}{% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Paginação -->
+  {% if total_pages > 1 %}
+  <div class="px-6 py-4 border-t border-slate-800 flex items-center justify-center gap-2">
+    {% if page > 1 %}
+    <a href="/lists/{{ email_list.id }}?page={{ page - 1 }}{% if status_filter %}&status_filter={{ status_filter }}{% endif %}"
+       class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm transition-colors">
+      ← Anterior
+    </a>
+    {% endif %}
+
+    {% for p in range([1, page - 2]|max, [total_pages + 1, page + 3]|min) %}
+    <a href="/lists/{{ email_list.id }}?page={{ p }}{% if status_filter %}&status_filter={{ status_filter }}{% endif %}"
+       class="px-3 py-1.5 rounded-lg text-sm transition-colors
+              {% if p == page %}bg-indigo-600 text-white{% else %}bg-slate-800 hover:bg-slate-700 text-slate-300{% endif %}">
+      {{ p }}
+    </a>
+    {% endfor %}
+
+    {% if page < total_pages %}
+    <a href="/lists/{{ email_list.id }}?page={{ page + 1 }}{% if status_filter %}&status_filter={{ status_filter }}{% endif %}"
+       class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm transition-colors">
+      Próxima →
+    </a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% else %}
+  <div class="flex flex-col items-center justify-center py-12 text-slate-600 text-sm">
+    <svg class="w-10 h-10 mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/>
+    </svg>
+    Nenhum resultado para exibir ainda.
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const listId   = {{ email_list.id }};
+  const listStatus = "{{ email_list.status }}";
+
+  // ── Gráfico Donut (Chart.js) ──────────────────────────────────
+  {% set has_chart_data = chart_data.values() | list | sum > 0 %}
+  {% if has_chart_data %}
+  (function() {
+    const ctx = document.getElementById('donutChart');
+    if (!ctx) return;
+
+    const labels = [];
+    const data   = [];
+    const colors = [];
+
+    {% if chart_data.get('VALID', 0) > 0 %}
+      labels.push('VALID');  data.push({{ chart_data.get('VALID', 0) }});  colors.push('#10b981');
+    {% endif %}
+    {% if chart_data.get('INVALID', 0) > 0 %}
+      labels.push('INVALID'); data.push({{ chart_data.get('INVALID', 0) }}); colors.push('#ef4444');
+    {% endif %}
+    {% if chart_data.get('UNKNOWN', 0) > 0 %}
+      labels.push('UNKNOWN'); data.push({{ chart_data.get('UNKNOWN', 0) }}); colors.push('#f59e0b');
+    {% endif %}
+    {% if chart_data.get('ACCEPT_ALL', 0) > 0 %}
+      labels.push('ACCEPT ALL'); data.push({{ chart_data.get('ACCEPT_ALL', 0) }}); colors.push('#a855f7');
+    {% endif %}
+
+    new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: data,
+          backgroundColor: colors,
+          borderWidth: 2,
+          borderColor: '#0f172a',
+          hoverOffset: 6,
+        }]
+      },
+      options: {
+        cutout: '72%',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => ` ${ctx.label}: ${ctx.parsed} e-mails`
+            }
+          }
+        }
+      }
+    });
+  })();
+  {% endif %}
+
+  // ── Polling de progresso com ETA ────────────────────────────
+  if (listStatus === 'PENDING' || listStatus === 'PROCESSING') {
+    const progressBar  = document.getElementById('progress-bar');
+    const progressText = document.getElementById('progress-text');
+    const elapsedEl    = document.getElementById('elapsed-text');
+    const rateEl       = document.getElementById('rate-text');
+    const etaEl        = document.getElementById('eta-text');
+    const pctEl        = document.getElementById('pct-text');
+
+    const startTime = Date.now();       // Marca o momento em que a página abriu
+    const POLL_MS   = 2000;             // Intervalo de polling
+    const WINDOW    = 5;                // Janela deslizante de readings para suavizar ETA
+    const readings  = [];               // [{ts, processed}, ...]
+
+    /** Formata segundos em "Xm Ys" ou "Xs" */
+    function fmtTime(sec) {
+      sec = Math.max(0, Math.round(sec));
+      if (sec < 60)  return `${sec}s`;
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return s > 0 ? `${m}m ${s}s` : `${m}m`;
+    }
+
+    const poll = setInterval(async () => {
+      try {
+        const res  = await fetch(`/api/lists/${listId}/progress`);
+        const data = await res.json();
+
+        // ── Atualiza barra e contagem ──────────────────────────
+        if (progressBar)  progressBar.style.width = data.percent + '%';
+        if (pctEl)        pctEl.textContent       = data.percent.toFixed(1) + '%';
+        if (progressText) {
+          progressText.innerHTML =
+            `${data.processed_count}<span class="text-slate-500 font-normal">/${data.total_emails}</span>`;
+        }
+
+        // ── Tempo decorrido desde abertura da página ──────────
+        const elapsedSec = (Date.now() - startTime) / 1000;
+        if (elapsedEl) elapsedEl.textContent = fmtTime(elapsedSec);
+
+        // ── Janela deslizante para calcular velocidade ────────
+        readings.push({ ts: Date.now(), processed: data.processed_count });
+        if (readings.length > WINDOW) readings.shift();
+
+        const remaining = data.total_emails - data.processed_count;
+
+        if (readings.length >= 2 && remaining > 0) {
+          // Velocidade entre o reading mais antigo e o mais novo da janela
+          const oldest   = readings[0];
+          const newest   = readings[readings.length - 1];
+          const deltaT   = (newest.ts - oldest.ts) / 1000;            // segundos
+          const deltaP   = newest.processed - oldest.processed;       // emails processados
+
+          if (deltaT > 0 && deltaP > 0) {
+            const rate      = deltaP / deltaT;                          // emails/s
+            const etaSec    = remaining / rate;                         // segundos restantes
+            const rateMin   = (rate * 60).toFixed(1);                  // emails/min
+
+            if (rateEl) rateEl.textContent = `${rateMin}/min`;
+            if (etaEl)  etaEl.textContent  = `~${fmtTime(etaSec)}`;
+          } else {
+            if (rateEl) rateEl.textContent = '—';
+            if (etaEl)  etaEl.textContent  = 'calculando…';
+          }
+        } else if (remaining === 0) {
+          if (rateEl) rateEl.textContent = '—';
+          if (etaEl)  etaEl.textContent  = 'concluindo…';
+        }
+
+        // ── Conclusão: recarrega página ───────────────────────
+        if (data.status === 'COMPLETED' || data.status === 'FAILED') {
+          clearInterval(poll);
+          if (etaEl) etaEl.textContent = data.status === 'COMPLETED' ? '✓ concluída' : '✗ falha';
+          setTimeout(() => window.location.reload(), 1000);
+        }
+
+      } catch (err) {
+        console.error('Erro ao buscar progresso:', err);
+      }
+    }, POLL_MS);
+  }
+</script>
+{% endblock %}

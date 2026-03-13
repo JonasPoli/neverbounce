@@ -1,0 +1,134 @@
+"""
+tasks.py
+--------
+Processamento em background com FastAPI BackgroundTasks.
+Suporta paralelismo configurável via ThreadPoolExecutor:
+  - Cada e-mail é processado em uma thread separada
+  - O número de workers é definido por lista (padrão: 5)
+  - Atualizações de progresso são thread-safe via lock
+"""
+
+import logging
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+
+from sqlalchemy.orm import Session
+
+from app.database import SessionLocal
+from app.models import ListItem, ListStatus
+from app.verifier import verify_email
+from app.services import cache_service, list_service
+
+logger = logging.getLogger(__name__)
+
+# Pausa entre batches para não sobrecarregar servidores remotos
+BATCH_DELAY_SECONDS = 0.5
+
+
+def process_list_task(list_id: int):
+    """
+    Função chamada pelo BackgroundTasks do FastAPI.
+    Processa a lista em paralelo usando ThreadPoolExecutor.
+    O número de workers é lido do campo EmailList.workers.
+    """
+    db: Session = SessionLocal()
+    lock = threading.Lock()  # Lock para incrementos de contador thread-safe
+
+    try:
+        list_service.update_list_status(db, list_id, ListStatus.PROCESSING)
+        email_list = list_service.get_list(db, list_id)
+
+        if not email_list:
+            logger.error(f"Lista {list_id} não encontrada")
+            return
+
+        workers    = max(1, min(email_list.workers or 5, 20))  # Clamp: 1–20
+        force_check = email_list.force_check
+
+        logger.info(
+            f"Processando lista {list_id} com {workers} workers "
+            f"({email_list.total_emails} e-mails, force_check={force_check})"
+        )
+
+        # Carrega todos os itens de uma vez
+        items = db.query(ListItem).filter(ListItem.list_id == list_id).all()
+
+        def process_item(item: ListItem) -> None:
+            """
+            Processa um único e-mail em sua própria thread.
+            Usa sessão de banco EXCLUSIVA por thread — nunca compartilha a sessão principal.
+            """
+            thread_db = SessionLocal()
+            try:
+                # ── Etapa 1: Cache global ────────────────────────────────
+                if not force_check:
+                    cached = cache_service.get_cached(thread_db, item.email)
+                    if cached:
+                        _update_item(thread_db, item.id, cached.status, cached.reason or "")
+                        logger.debug(f"[cache] {item.email} → {cached.status}")
+                        return
+
+                # ── Etapas 2-4: Verificação real ─────────────────────────
+                result = verify_email(item.email)
+                status = result["status"]
+                reason = result["reason"]
+
+                # Salva no cache global e no item da lista
+                cache_service.save_to_cache(thread_db, item.email, status, reason)
+                _update_item(thread_db, item.id, status, reason)
+                logger.debug(f"[verify] {item.email} → {status}")
+
+            except Exception as e:
+                logger.error(f"Erro ao processar {item.email}: {e}", exc_info=True)
+                try:
+                    _update_item(thread_db, item.id, "UNKNOWN", f"Processing error: {str(e)[:100]}")
+                except Exception:
+                    pass
+            finally:
+                # Incrementa contador usando a sessão da própria thread
+                # O lock evita que duas threads atualizem o contador ao mesmo tempo
+                try:
+                    with lock:
+                        list_service.increment_processed(thread_db, list_id)
+                except Exception as e:
+                    logger.error(f"Erro ao incrementar contador: {e}", exc_info=True)
+                thread_db.close()
+
+        # ── Execução paralela ────────────────────────────────────────
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(process_item, item) for item in items]
+
+            # Aguarda conclusão e trata exceções não capturadas
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"Exceção não tratada em thread: {e}", exc_info=True)
+
+        # ── Finaliza com sucesso ─────────────────────────────────────
+        list_service.update_list_status(db, list_id, ListStatus.COMPLETED)
+        logger.info(f"Lista {list_id} concluída.")
+
+    except Exception as e:
+        logger.error(f"Falha grave ao processar lista {list_id}: {e}", exc_info=True)
+        try:
+            list_service.update_list_status(db, list_id, ListStatus.FAILED)
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+def _update_item(db: Session, item_id: int, status: str, reason: str) -> None:
+    """Atualiza o status de um ListItem usando a sessão fornecida."""
+    from sqlalchemy import text
+    db.execute(
+        text(
+            "UPDATE list_items SET status = :status, reason = :reason, "
+            "checked_at = :now WHERE id = :id"
+        ),
+        {"status": status, "reason": reason, "now": datetime.utcnow(), "id": item_id},
+    )
+    db.commit()

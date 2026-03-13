@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+
+{% block title %}Verificar E-mails — Email Validator Pro{% endblock %}
+{% block page_title %}Verificar E-mails{% endblock %}
+{% block page_subtitle %}Cole e-mails, envie um CSV ou XLSX para iniciar a verificação{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto">
+
+  {% if error %}
+  <!-- Mensagem de erro -->
+  <div class="mb-6 flex items-start gap-3 px-4 py-4 rounded-xl bg-red-900/30 border border-red-800 text-red-300 text-sm">
+    <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    <span>{{ error }}</span>
+  </div>
+  {% endif %}
+
+  <form method="post" action="/upload" enctype="multipart/form-data" id="upload-form">
+
+    <!-- ── Opção 1: Colar e-mails ───────────────────────────────── -->
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 mb-4">
+      <h2 class="text-sm font-semibold text-white mb-1">Opção 1 — Colar E-mails</h2>
+      <p class="text-xs text-slate-500 mb-4">Cole um ou mais endereços de e-mail, separados por linha, vírgula ou ponto e vírgula.</p>
+
+      <textarea
+        id="email_text"
+        name="email_text"
+        rows="10"
+        placeholder="usuario@dominio.com&#10;contato@empresa.com.br&#10;teste@gmail.com"
+        class="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-sm text-slate-200
+               placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent
+               resize-y transition-colors font-mono"
+      ></textarea>
+    </div>
+
+    <!-- ── Opção 2: Upload de arquivos ────────────────────────────── -->
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 mb-4">
+      <h2 class="text-sm font-semibold text-white mb-1">Opção 2 — Upload de Arquivo</h2>
+      <p class="text-xs text-slate-500 mb-5">Envie um arquivo CSV ou XLSX com e-mails. O sistema detecta automaticamente a coluna.</p>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+        <!-- CSV -->
+        <div>
+          <label class="block text-xs font-medium text-slate-400 mb-2">Arquivo CSV</label>
+          <label for="csv_file"
+                 class="flex flex-col items-center justify-center gap-2 w-full h-28 border-2 border-dashed border-slate-700
+                        rounded-xl cursor-pointer hover:border-indigo-500 hover:bg-indigo-950/20 transition-all group">
+            <svg class="w-7 h-7 text-slate-600 group-hover:text-indigo-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+            </svg>
+            <span class="text-xs text-slate-500 group-hover:text-slate-300 transition-colors" id="csv_label">Clique para selecionar CSV</span>
+            <input type="file" id="csv_file" name="csv_file" accept=".csv" class="hidden"
+                   onchange="updateLabel(this, 'csv_label')">
+          </label>
+        </div>
+
+        <!-- XLSX -->
+        <div>
+          <label class="block text-xs font-medium text-slate-400 mb-2">Arquivo Excel (XLSX)</label>
+          <label for="xlsx_file"
+                 class="flex flex-col items-center justify-center gap-2 w-full h-28 border-2 border-dashed border-slate-700
+                        rounded-xl cursor-pointer hover:border-indigo-500 hover:bg-indigo-950/20 transition-all group">
+            <svg class="w-7 h-7 text-slate-600 group-hover:text-indigo-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+            <span class="text-xs text-slate-500 group-hover:text-slate-300 transition-colors" id="xlsx_label">Clique para selecionar XLSX</span>
+            <input type="file" id="xlsx_file" name="xlsx_file" accept=".xlsx,.xls" class="hidden"
+                   onchange="updateLabel(this, 'xlsx_label')">
+          </label>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ── Opções avançadas ───────────────────────────────────────── -->
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 mb-6">
+      <h2 class="text-sm font-semibold text-white mb-5">Opções Avançadas</h2>
+
+      <!-- Workers paralelos -->
+      <div class="mb-6">
+        <div class="flex items-center justify-between mb-1">
+          <div>
+            <p class="text-sm font-medium text-slate-200">Workers Paralelos</p>
+            <p class="text-xs text-slate-500 mt-0.5">Número de e-mails verificados ao mesmo tempo. Mais workers = mais rápido, mas maior uso de rede.</p>
+          </div>
+          <span id="workers-value"
+                class="ml-6 flex-shrink-0 w-10 h-10 rounded-lg bg-indigo-900/50 border border-indigo-700
+                       flex items-center justify-center text-lg font-bold text-indigo-300">
+            5
+          </span>
+        </div>
+        <div class="flex items-center gap-3 mt-3">
+          <span class="text-xs text-slate-600 w-4 text-right">1</span>
+          <input type="range" id="workers" name="workers" min="1" max="20" value="5"
+                 class="flex-1 h-2 appearance-none rounded-full outline-none cursor-pointer
+                        bg-slate-700 accent-indigo-500"
+                 oninput="document.getElementById('workers-value').textContent = this.value">
+          <span class="text-xs text-slate-600 w-6">20</span>
+        </div>
+        <!-- Guia rápido -->
+        <div class="flex gap-3 mt-3 text-xs">
+          <span class="px-2 py-1 rounded bg-slate-800 text-slate-500">1–3 → conservador</span>
+          <span class="px-2 py-1 rounded bg-slate-800 text-slate-500">5–10 → recomendado</span>
+          <span class="px-2 py-1 rounded bg-slate-800 text-slate-500">15–20 → agressivo</span>
+        </div>
+      </div>
+
+      <!-- Divisor -->
+      <div class="border-t border-slate-800 mb-5"></div>
+
+      <!-- Toggle: Forçar re-verificação -->
+      <div class="flex items-center justify-between">
+        <div>
+          <p class="text-sm font-medium text-slate-200">Forçar Re-verificação (Ignorar Cache)</p>
+          <p class="text-xs text-slate-500 mt-0.5">
+            Desativa o uso do cache global e refaz todas as verificações SMTP/DNS do zero.
+            Útil para listas desatualizadas.
+          </p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer ml-6 flex-shrink-0">
+          <input type="checkbox" name="force_check" value="true" id="force_check" class="sr-only peer">
+          <div class="w-11 h-6 bg-slate-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-500
+                      rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white
+                      after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white
+                      after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5
+                      after:transition-all peer-checked:bg-indigo-600"></div>
+        </label>
+      </div>
+    </div>
+
+    <!-- ── Botão de envio ────────────────────────────────────────── -->
+    <button type="submit" id="submit-btn"
+            class="w-full flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl
+                   bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500
+                   text-white font-semibold text-sm shadow-lg shadow-indigo-900/40 transition-all
+                   hover:shadow-indigo-900/60 hover:scale-[1.01] active:scale-[0.99]">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      <span id="submit-text">Iniciar Verificação</span>
+    </button>
+
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Atualiza label do upload ao selecionar arquivo
+  function updateLabel(input, labelId) {
+    const label = document.getElementById(labelId);
+    if (input.files && input.files[0]) {
+      label.textContent = input.files[0].name;
+      label.classList.add('text-indigo-400');
+    }
+  }
+
+  // Feedback visual no submit
+  document.getElementById('upload-form').addEventListener('submit', function() {
+    const btn = document.getElementById('submit-btn');
+    const text = document.getElementById('submit-text');
+    btn.disabled = true;
+    btn.classList.add('opacity-75', 'cursor-not-allowed');
+    text.textContent = 'Enviando...';
+  });
+</script>
+{% endblock %}
