@@ -15,11 +15,21 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATABASE_URL = f"sqlite:///{os.path.join(BASE_DIR, 'database.db')}"
 
 # Engine com check_same_thread=False necessário para SQLite + FastAPI
+# timeout em 30s evita 'database is locked' em picos de paralelismo
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    echo=False,  # Mude para True para depuração SQL
+    connect_args={"check_same_thread": False, "timeout": 30},
+    echo=False,
 )
+
+# Habilita modo WAL (Write-Ahead Logging) para melhor concorrência
+from sqlalchemy import event
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
 
 # Fábrica de sessões
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

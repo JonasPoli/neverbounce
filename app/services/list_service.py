@@ -123,6 +123,40 @@ def update_list_item(
     db.commit()
 
 
+def reset_unknown_items(db: Session, list_id: int) -> int:
+    """
+    Reseta o status de todos os itens UNKNOWN para None.
+    Isso permite que sejam processados novamente.
+    Ajusta também o processed_count da lista.
+    Retorna a quantidade de itens resetados.
+    """
+    from app.models import ListItem, EmailStatus
+    
+    # Busca itens UNKNOWN
+    unknown_items = db.query(ListItem).filter(
+        ListItem.list_id == list_id,
+        ListItem.status == EmailStatus.UNKNOWN
+    ).all()
+    
+    count = len(unknown_items)
+    if count > 0:
+        # Reseta itens
+        for item in unknown_items:
+            item.status = None
+            item.reason = None
+            item.checked_at = None
+        
+        # Ajusta processed_count da lista (decrementa o que vai ser reprocessado)
+        db.query(EmailList).filter(EmailList.id == list_id).update({
+            "processed_count": EmailList.processed_count - count,
+            "updated_at": datetime.utcnow()
+        })
+        
+        db.commit()
+    
+    return count
+
+
 # ──────────────────────────────────────────────
 # Métricas globais para o dashboard
 # ──────────────────────────────────────────────

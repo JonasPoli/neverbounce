@@ -79,38 +79,6 @@
     <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 mb-6">
       <h2 class="text-sm font-semibold text-white mb-5">Opções Avançadas</h2>
 
-      <!-- Workers paralelos -->
-      <div class="mb-6">
-        <div class="flex items-center justify-between mb-1">
-          <div>
-            <p class="text-sm font-medium text-slate-200">Workers Paralelos</p>
-            <p class="text-xs text-slate-500 mt-0.5">Número de e-mails verificados ao mesmo tempo. Mais workers = mais rápido, mas maior uso de rede.</p>
-          </div>
-          <span id="workers-value"
-                class="ml-6 flex-shrink-0 w-10 h-10 rounded-lg bg-indigo-900/50 border border-indigo-700
-                       flex items-center justify-center text-lg font-bold text-indigo-300">
-            5
-          </span>
-        </div>
-        <div class="flex items-center gap-3 mt-3">
-          <span class="text-xs text-slate-600 w-4 text-right">1</span>
-          <input type="range" id="workers" name="workers" min="1" max="20" value="5"
-                 class="flex-1 h-2 appearance-none rounded-full outline-none cursor-pointer
-                        bg-slate-700 accent-indigo-500"
-                 oninput="document.getElementById('workers-value').textContent = this.value">
-          <span class="text-xs text-slate-600 w-6">20</span>
-        </div>
-        <!-- Guia rápido -->
-        <div class="flex gap-3 mt-3 text-xs">
-          <span class="px-2 py-1 rounded bg-slate-800 text-slate-500">1–3 → conservador</span>
-          <span class="px-2 py-1 rounded bg-slate-800 text-slate-500">5–10 → recomendado</span>
-          <span class="px-2 py-1 rounded bg-slate-800 text-slate-500">15–20 → agressivo</span>
-        </div>
-      </div>
-
-      <!-- Divisor -->
-      <div class="border-t border-slate-800 mb-5"></div>
-
       <!-- Toggle: Forçar re-verificação -->
       <div class="flex items-center justify-between">
         <div>

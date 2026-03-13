@@ -36,7 +36,7 @@ from app.utils import (
     deduplicate,
 )
 from app.tasks import process_list_task
-from app.services import list_service, export_service
+from app.services import list_service, export_service, settings_service
 from app.services.list_service import get_stuck_lists
 
 # ──────────────────────────────────────────────
@@ -90,9 +90,20 @@ def startup_event():
     init_db()
     logger.info("Banco de dados inicializado.")
 
-    # ── Auto-resume de listas interrompidas ─────────────────────────
+    # ── Inicializa Configurações Globais ──────────────────────────
     from app.database import SessionLocal as _SL
-    from app.models import ListItem, EmailList as _EL
+    _db = _SL()
+    try:
+        # Garante que 'workers_count' e 'domain_cooldown' existem
+        if not settings_service.get_setting(_db, "workers_count"):
+            settings_service.set_setting(_db, "workers_count", "5")
+        if not settings_service.get_setting(_db, "domain_cooldown"):
+            settings_service.set_setting(_db, "domain_cooldown", "1.5")
+    finally:
+        _db.close()
+
+    # ── Auto-resume de listas interrompidas ─────────────────────────
+    from app.models import EmailList, ListItem
     _db = _SL()
     stuck_ids = []  # Coleta IDs ANTES de fechar a sessão (evita DetachedInstanceError)
     try:
@@ -103,7 +114,7 @@ def startup_event():
             # Extrai primitivos enquanto a sessão ainda está aberta
             stuck_ids.append((lst.id, lst.name))
             list_service.update_list_status(_db, lst.id, "PENDING")
-            _db.query(_EL).filter_by(id=lst.id).update({"processed_count": 0})
+            _db.query(EmailList).filter_by(id=lst.id).update({"processed_count": 0})
             _db.query(ListItem).filter(
                 ListItem.list_id == lst.id,
                 ListItem.status.is_(None),
@@ -128,10 +139,37 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     """Página principal com métricas gerais e lista de verificações recentes."""
     lists = list_service.get_all_lists(db, limit=20)
     metrics = list_service.get_dashboard_metrics(db)
+    workers_count = settings_service.get_workers_count(db)
+    domain_cooldown = settings_service.get_domain_cooldown(db)
     return templates.TemplateResponse(
         "dashboard.html",
-        {"request": request, "lists": lists, "metrics": metrics},
+        {
+            "request": request, 
+            "lists": lists, 
+            "metrics": metrics,
+            "workers_count": workers_count,
+            "domain_cooldown": domain_cooldown
+        },
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ROTAS — Configurações
+# ──────────────────────────────────────────────────────────────────────────────
+@app.post("/api/settings/workers", name="update_workers")
+def update_workers(workers: int = Form(...), db: Session = Depends(get_db)):
+    """Atualiza o número global de workers."""
+    workers_clamped = max(1, min(workers, 20))
+    settings_service.set_setting(db, "workers_count", str(workers_clamped))
+    return JSONResponse({"status": "ok", "workers": workers_clamped})
+
+
+@app.post("/api/settings/cooldown", name="update_cooldown")
+def update_cooldown(cooldown: float = Form(...), db: Session = Depends(get_db)):
+    """Atualiza o tempo global de cooldown por domínio."""
+    cooldown_clamped = max(0.1, min(cooldown, 5.0))
+    settings_service.set_setting(db, "domain_cooldown", str(cooldown_clamped))
+    return JSONResponse({"status": "ok", "cooldown": cooldown_clamped})
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -150,7 +188,6 @@ async def upload_submit(
     db: Session = Depends(get_db),
     email_text: str = Form(default=""),
     force_check: bool = Form(default=False),
-    workers: int = Form(default=5),
     csv_file: UploadFile = File(default=None),
     xlsx_file: UploadFile = File(default=None),
 ):
@@ -222,8 +259,8 @@ async def upload_submit(
         )
 
     # ── Cria lista no banco ──────────────────────────────────────────
-    workers_clamped = max(1, min(workers, 20))
-    email_list = list_service.create_list(db, list_name, emails, force_check, workers=workers_clamped)
+    workers_global = settings_service.get_workers_count(db)
+    email_list = list_service.create_list(db, list_name, emails, force_check, workers=workers_global)
 
     # ── Dispara processamento em background ─────────────────────────
     background_tasks.add_task(process_list_task, email_list.id)
@@ -308,6 +345,35 @@ def list_export(list_id: int, db: Session = Depends(get_db)):
         filename=os.path.basename(filepath),
         media_type="text/csv",
     )
+
+
+@app.post("/lists/{list_id}/reprocess-unknown", name="list_reprocess_unknown")
+def reprocess_unknown(
+    list_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Filtra itens UNKNOWN, reseta o status para None e re-dispara o processamento.
+    """
+    email_list = list_service.get_list(db, list_id)
+    if not email_list:
+        raise HTTPException(status_code=404, detail="Lista não encontrada")
+    
+    # Reseta itens UNKNOWN para None para que sejam processados novamente
+    count = list_service.reset_unknown_items(db, list_id)
+    
+    if count > 0:
+        # Atualiza status da lista se necessário
+        list_service.update_list_status(db, list_id, ListStatus.PROCESSING)
+        
+        # Dispara tarefa em background
+        background_tasks.add_task(process_list_task, list_id)
+        
+        logger.info(f"Reprocessamento de {count} UNKNOWNs iniciado para lista {list_id}")
+        return RedirectResponse(url=f"/lists/{list_id}", status_code=303)
+    
+    return RedirectResponse(url=f"/lists/{list_id}", status_code=303)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

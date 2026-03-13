@@ -102,89 +102,99 @@ def _fallback_a_record(domain: str):
 
 def _check_smtp(email: str, domain: str, mx_hosts: list) -> Dict[str, str]:
     """
-    Realiza verificação SMTP no primeiro MX disponível.
-    Inclui heurística ACCEPT_ALL.
+    Realiza verificação SMTP nos MX hosts disponíveis.
+    Tenta múltiplas portas (25, 587, 465) e lida com greylisting.
     """
+    ports = [25, 587, 465]
+    last_error_reason = "All SMTP attempts failed"
+
     for mx_host in mx_hosts[:3]:  # Tenta até 3 MX hosts
-        result = _smtp_probe(email, mx_host)
-        if result is not None:
-            # Se o e-mail foi aceito (VALID), verifica ACCEPT_ALL
-            if result["status"] == EmailStatus.VALID:
-                accept_all = _detect_accept_all(domain, mx_host)
-                if accept_all:
-                    return {"status": EmailStatus.ACCEPT_ALL, "reason": "Server accepts all recipients"}
-            return result
-        # Se result é None, tenta o próximo MX
+        for port in ports:
+            result = _smtp_probe(email, mx_host, port)
+            if result is not None:
+                # Se o e-mail foi aceito (VALID), verifica ACCEPT_ALL
+                if result["status"] == EmailStatus.VALID:
+                    accept_all = _detect_accept_all(domain, mx_host, port)
+                    if accept_all:
+                        return {"status": EmailStatus.ACCEPT_ALL, "reason": "Server accepts all recipients"}
+                
+                # Se o resultado for definitivo (VALID ou INVALID), retornamos
+                if result["status"] in (EmailStatus.VALID, EmailStatus.INVALID):
+                    return result
+                
+                # Caso contrário (UNKNOWN), guardamos o detalhe e tentamos próxima porta/MX
+                last_error_reason = result["reason"]
 
-    return {"status": EmailStatus.UNKNOWN, "reason": "Could not connect to any MX server"}
+    return {"status": EmailStatus.UNKNOWN, "reason": f"SMTP Check failed: {last_error_reason}"}
 
 
-def _smtp_probe(email: str, mx_host: str) -> Optional[Dict[str, str]]:
+def _smtp_probe(email: str, mx_host: str, port: int = 25) -> Optional[Dict[str, str]]:
     """
-    Sonda um único servidor SMTP.
-    Retorna dict de resultado ou None se não conseguiu conectar.
+    Sonda um único servidor SMTP em uma porta específica.
+    Retorna dict de resultado. Inclui suporte a STARTTLS e SSL/TLS.
+    Lida com Greylisting (4xx) com retry único após delay.
     """
-    try:
-        with smtplib.SMTP(timeout=SMTP_TIMEOUT) as smtp:
-            smtp.connect(mx_host, SMTP_PORT)
-            smtp.ehlo_or_helo_if_needed()
-            smtp.mail(SMTP_FROM_EMAIL)
-
-            code, message = smtp.rcpt(email)
-            msg_str = message.decode(errors="ignore") if isinstance(message, bytes) else str(message)
-
-            logger.debug(f"SMTP {email} via {mx_host}: {code} {msg_str}")
-
-            if code == 250:
-                return {"status": EmailStatus.VALID, "reason": f"SMTP 250: {msg_str[:80]}"}
-            elif code in (550, 551, 552, 553, 554):
-                return {"status": EmailStatus.INVALID, "reason": f"SMTP {code}: {msg_str[:80]}"}
-            elif code == 421:
-                # Servidor temporariamente indisponível
-                return {"status": EmailStatus.UNKNOWN, "reason": f"SMTP {code}: server temporarily unavailable"}
-            elif code in (450, 451, 452):
-                # Erros temporários / greylisting
-                return {"status": EmailStatus.UNKNOWN, "reason": f"SMTP {code}: temporary error or greylisting"}
+    def attempt():
+        try:
+            # Seleciona modo de conexão baseado na porta
+            if port == 465:
+                smtp = smtplib.SMTP_SSL(mx_host, port, timeout=SMTP_TIMEOUT)
             else:
-                return {"status": EmailStatus.UNKNOWN, "reason": f"SMTP {code}: {msg_str[:80]}"}
+                smtp = smtplib.SMTP(mx_host, port, timeout=SMTP_TIMEOUT)
+                if port == 587:
+                    smtp.starttls()
+            
+            with smtp:
+                smtp.ehlo_or_helo_if_needed()
+                smtp.mail(SMTP_FROM_EMAIL)
+                code, message = smtp.rcpt(email)
+                msg_str = message.decode(errors="ignore") if isinstance(message, bytes) else str(message)
 
-    except smtplib.SMTPConnectError as e:
-        logger.warning(f"Falha ao conectar em {mx_host}: {e}")
-        return None  # Tenta próximo MX
-    except smtplib.SMTPServerDisconnected:
-        return {"status": EmailStatus.UNKNOWN, "reason": "Server disconnected unexpectedly"}
-    except smtplib.SMTPException as e:
-        return {"status": EmailStatus.UNKNOWN, "reason": f"SMTP error: {str(e)[:80]}"}
-    except socket.timeout:
-        return {"status": EmailStatus.UNKNOWN, "reason": "SMTP connection timed out"}
-    except OSError as e:
-        logger.warning(f"Erro de socket em {mx_host}: {e}")
-        return None  # Tenta próximo MX
+                logger.debug(f"SMTP {email} via {mx_host}:{port} -> {code} {msg_str}")
+
+                if code == 250:
+                    return {"status": EmailStatus.VALID, "reason": f"SMTP 250: {msg_str[:80]}"}
+                elif code in (550, 551, 552, 553, 554):
+                    return {"status": EmailStatus.INVALID, "reason": f"SMTP {code}: {msg_str[:80]}"}
+                elif code in (450, 451, 452, 421):
+                    return "greylist"
+                else:
+                    return {"status": EmailStatus.UNKNOWN, "reason": f"SMTP {code}: {msg_str[:80]}"}
+
+        except smtplib.SMTPConnectError:
+            return None
+        except (smtplib.SMTPException, socket.timeout, OSError) as e:
+            return {"status": EmailStatus.UNKNOWN, "reason": str(e)[:80]}
+
+    # Primeira tentativa
+    result = attempt()
+
+    # Se for Greylisting, espera 5 segundos e tenta de novo
+    if result == "greylist":
+        import time
+        time.sleep(5)
+        result = attempt()
+        if result == "greylist":
+            return {"status": EmailStatus.UNKNOWN, "reason": "Temporary failure (Greylisting) persistent after retry"}
+    
+    return result
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Heurística ACCEPT_ALL
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _detect_accept_all(domain: str, mx_host: str) -> bool:
+def _detect_accept_all(domain: str, mx_host: str, port: int = 25) -> bool:
     """
     Detecta se o servidor aceita qualquer destinatário (catchall/accept-all).
-
-    Estratégia:
-    1. Gera um e-mail aleatório e improvável para o mesmo domínio
-    2. Sonda via SMTP
-    3. Se também retornar 250, o servidor provavelmente aceita tudo → ACCEPT_ALL
-
-    Isolado e comentado conforme especificação.
     """
     try:
         fake_email = random_email_for_domain(domain)
-        result = _smtp_probe(fake_email, mx_host)
+        result = _smtp_probe(fake_email, mx_host, port)
         if result and result["status"] == EmailStatus.VALID:
-            logger.info(f"ACCEPT_ALL detectado em {domain}: e-mail falso '{fake_email}' foi aceito")
+            logger.info(f"ACCEPT_ALL detectado em {domain} via porta {port}")
             return True
         return False
     except Exception as e:
-        # Nunca deixa a heurística quebrar o fluxo principal
         logger.warning(f"Erro na heurística ACCEPT_ALL para {domain}: {e}")
         return False

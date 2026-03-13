@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models import ListItem, ListStatus
 from app.verifier import verify_email
-from app.services import cache_service, list_service
+from app.services import cache_service, list_service, settings_service, domain_service
+from app.utils import extract_domain
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,8 @@ def process_list_task(list_id: int):
             logger.error(f"Lista {list_id} não encontrada")
             return
 
-        workers    = max(1, min(email_list.workers or 5, 20))  # Clamp: 1–20
+        workers = settings_service.get_workers_count(db)
+        workers = max(1, min(workers, 20))  # Clamp: 1–20
         force_check = email_list.force_check
 
         logger.info(
@@ -71,6 +73,11 @@ def process_list_task(list_id: int):
                         return
 
                 # ── Etapas 2-4: Verificação real ─────────────────────────
+                # Respeita o cooldown por domínio antes de contatar o servidor via SMTP
+                domain = extract_domain(item.email)
+                if domain:
+                    domain_service.wait_for_domain_cooldown(thread_db, domain)
+
                 result = verify_email(item.email)
                 status = result["status"]
                 reason = result["reason"]
@@ -122,13 +129,25 @@ def process_list_task(list_id: int):
 
 
 def _update_item(db: Session, item_id: int, status: str, reason: str) -> None:
-    """Atualiza o status de um ListItem usando a sessão fornecida."""
+    """Atualiza o status de um ListItem com retry simples para evitar 'database is locked'."""
     from sqlalchemy import text
-    db.execute(
-        text(
-            "UPDATE list_items SET status = :status, reason = :reason, "
-            "checked_at = :now WHERE id = :id"
-        ),
-        {"status": status, "reason": reason, "now": datetime.utcnow(), "id": item_id},
-    )
-    db.commit()
+    import time
+
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            db.execute(
+                text(
+                    "UPDATE list_items SET status = :status, reason = :reason, "
+                    "checked_at = :now WHERE id = :id"
+                ),
+                {"status": status, "reason": reason, "now": datetime.utcnow(), "id": item_id},
+            )
+            db.commit()
+            return  # Sucesso
+        except Exception as e:
+            if "locked" in str(e).lower() and attempt < max_retries - 1:
+                db.rollback()
+                time.sleep(0.1 * (attempt + 1))  # Backoff exponencial simples
+                continue
+            raise e

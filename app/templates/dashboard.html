@@ -117,6 +117,75 @@
 
 </div>
 
+<!-- ── Configurações Globais: Workers & Antispam ──────────────────────────── -->
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-8 mb-8">
+
+  <!-- Bloco Workers -->
+  <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 card-glow">
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+      <div class="flex-1">
+        <div class="flex items-center gap-2 mb-1">
+          <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+          </svg>
+          <h2 class="text-lg font-bold text-white">Workers Paralelos</h2>
+        </div>
+        <p class="text-xs text-slate-500 max-w-md">
+          Número de e-mails verificados ao mesmo tempo.
+        </p>
+      </div>
+      <div class="w-full md:w-64">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Ajuste Global</span>
+          <span id="worker-display" class="px-2 py-0.5 rounded bg-indigo-500 text-white text-sm font-bold shadow-lg shadow-indigo-900/20">
+            {{ workers_count }}
+          </span>
+        </div>
+        <input type="range" id="workers-slider" min="1" max="20" value="{{ workers_count }}"
+               class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+        <div class="flex justify-between mt-2 text-[10px] text-slate-600 font-bold uppercase tracking-tighter">
+          <span>1 <span class="font-normal lowercase">min</span></span>
+          <span id="strategy-label" class="text-indigo-400 transition-colors">recomendado</span>
+          <span>20 <span class="font-normal lowercase">max</span></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bloco Antispam Cooldown -->
+  <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 card-glow">
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+      <div class="flex-1">
+        <div class="flex items-center gap-2 mb-1">
+          <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04M12 21a11.955 11.955 0 01-8.618-3.04m17.236 0A11.955 11.955 0 0112 21c-4.478 0-8.268-2.943-9.542-7"/>
+          </svg>
+          <h2 class="text-lg font-bold text-white">Cooldown Antispam</h2>
+        </div>
+        <p class="text-xs text-slate-500 max-w-md">
+          Tempo de espera (s) entre e-mails do mesmo domínio.
+        </p>
+      </div>
+      <div class="w-full md:w-64">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Por Domínio</span>
+          <span id="cooldown-display" class="px-2 py-0.5 rounded bg-emerald-500 text-white text-sm font-bold shadow-lg shadow-emerald-900/20">
+            {{ domain_cooldown }}s
+          </span>
+        </div>
+        <input type="range" id="cooldown-slider" min="0.1" max="5.0" step="0.1" value="{{ domain_cooldown }}"
+               class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500">
+        <div class="flex justify-between mt-2 text-[10px] text-slate-600 font-bold uppercase tracking-tighter">
+          <span>0.1s <span class="font-normal lowercase">min</span></span>
+          <span id="cooldown-label" class="text-emerald-400 transition-colors">médio</span>
+          <span>5.0s <span class="font-normal lowercase">max</span></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
 <!-- ── Listas recentes ──────────────────────────────────────────────── -->
 <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
   <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
@@ -211,4 +280,76 @@
   {% endif %}
 </div>
 
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // ── Controle de Workers (Slider + API) ───────────────────────────
+  (function() {
+    const slider    = document.getElementById('workers-slider');
+    const display   = document.getElementById('worker-display');
+    const label     = document.getElementById('strategy-label');
+    let timeout     = null;
+
+    if (!slider) return;
+
+    slider.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value);
+      display.textContent = val;
+      
+      if (val <= 3) {
+        label.textContent = "conservador";
+        label.className   = "text-slate-400 transition-colors";
+      } else if (val <= 10) {
+        label.textContent = "recomendado";
+        label.className   = "text-indigo-400 transition-colors";
+      } else {
+        label.textContent = "agressivo";
+        label.className   = "text-purple-400 transition-colors";
+      }
+
+      clearTimeout(timeout);
+      timeout = setTimeout(() => {
+        const formData = new FormData();
+        formData.append('workers', val);
+        fetch('/api/settings/workers', { method: 'POST', body: formData });
+      }, 300);
+    });
+    slider.dispatchEvent(new Event('input'));
+  })();
+
+  // ── Controle de Cooldown Antispam (Slider + API) ───────────────────
+  (function() {
+    const slider    = document.getElementById('cooldown-slider');
+    const display   = document.getElementById('cooldown-display');
+    const label     = document.getElementById('cooldown-label');
+    let timeout     = null;
+
+    if (!slider) return;
+
+    slider.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      display.textContent = val.toFixed(1) + 's';
+      
+      if (val >= 2.6) {
+        label.textContent = "conservador";
+        label.className   = "text-slate-400 transition-colors";
+      } else if (val >= 1.1) {
+        label.textContent = "médio";
+        label.className   = "text-emerald-400 transition-colors";
+      } else {
+        label.textContent = "agressivo";
+        label.className   = "text-orange-400 transition-colors";
+      }
+
+      clearTimeout(timeout);
+      timeout = setTimeout(() => {
+        const formData = new FormData();
+        formData.append('cooldown', val);
+        fetch('/api/settings/cooldown', { method: 'POST', body: formData });
+      }, 300);
+    });
+    slider.dispatchEvent(new Event('input'));
+  })();
+</script>
 {% endblock %}

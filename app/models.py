@@ -99,3 +99,38 @@ class ListItem(Base):
 
     def __repr__(self):
         return f"<ListItem email={self.email} status={self.status}>"
+
+
+# ──────────────────────────────────────────────
+# Configurações globais do sistema
+# ──────────────────────────────────────────────
+class SystemSetting(Base):
+    """
+    Armazena chaves e valores de configuração global.
+    Ex: 'workers_count': '10'
+    """
+    __tablename__ = "system_settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<SystemSetting key={self.key} value={self.value}>"
+
+
+# ──────────────────────────────────────────────
+# Estatísticas e Cooldown de Domínios
+# ──────────────────────────────────────────────
+class DomainStat(Base):
+    """
+    Rastreia a última vez que um domínio foi contatado via SMTP.
+    Evita que o sistema seja banido por excesso de requisições.
+    """
+    __tablename__ = "domain_stats"
+
+    domain = Column(String, primary_key=True)
+    last_contact = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<DomainStat domain={self.domain} last_contact={self.last_contact}>"
