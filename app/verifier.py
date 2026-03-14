@@ -19,7 +19,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, asdict, field
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Union
 
 import dns.resolver
 import dns.exception
@@ -198,12 +198,22 @@ def normalize_smtp_outcome(
             technical_failure=True,
         )
 
-    # ── Código 250: aceito ──────────────────────────────────────────
-    if code == 250:
+    # ── Código 250/251: aceito ─────────────────────────────────────
+    if code in (250, 251):
         return SmtpOutcome(
             smtp_code=code,
             raw_message=message[:120],
             normalized_reason="accepted_recipient",
+            outcome_type="accepted",
+            accept_hint=True,
+        )
+
+    # ── Código 252: aceito mas não verificável ──────────────────────
+    if code == 252:
+        return SmtpOutcome(
+            smtp_code=code,
+            raw_message=message[:120],
+            normalized_reason="accepted_unverifiable",
             outcome_type="accepted",
             accept_hint=True,
         )
@@ -331,7 +341,7 @@ def detect_accept_all_behavior(
         or random_outcome.technical_failure or random_outcome.policy_block):
         result.technical_contamination = True
 
-    # Score
+    # Score — ajuste 4: random ambiguous NÃO basta para ACCEPT_ALL
     score = 0.0
 
     if real_outcome.outcome_type == "accepted":
@@ -340,8 +350,7 @@ def detect_accept_all_behavior(
     if random_outcome.outcome_type == "accepted":
         score += 0.5
 
-    if random_outcome.outcome_type == "ambiguous":
-        score += 0.1
+    # random ambiguous NÃO contribui para accept-all (removido bônus)
 
     if random_outcome.technical_failure or random_outcome.policy_block:
         score -= 0.6
@@ -352,7 +361,10 @@ def detect_accept_all_behavior(
     result.accept_all_score = round(max(0.0, min(1.0, score)), 2)
 
     # Razão textual
-    if result.accept_all_score >= 0.7 and not result.technical_contamination:
+    # ACCEPT_ALL requer random accepted explicitamente (score >= 0.7)
+    if (result.accept_all_score >= 0.7
+        and random_outcome.outcome_type == "accepted"
+        and not result.technical_contamination):
         result.accept_all_reason = "catch_all_detected"
     elif (real_outcome.outcome_type == "accepted"
           and random_outcome.outcome_type == "invalid_recipient"):
@@ -458,8 +470,9 @@ def decide_final_status(
                 accept_all_score=accept_all.accept_all_score,
             )
 
-        # 4c. Score alto de catch-all sem contaminação → ACCEPT_ALL
-        if accept_all.accept_all_score >= 0.7:
+        # 4c. Score alto de catch-all E random aceito → ACCEPT_ALL
+        if (accept_all.accept_all_score >= 0.7
+            and accept_all.random_outcome_type == "accepted"):
             return _build_result(
                 status=EmailStatus.ACCEPT_ALL,
                 normalized_reason="catch_all_detected",
@@ -469,18 +482,8 @@ def decide_final_status(
                 accept_all_score=accept_all.accept_all_score,
             )
 
-        # 4d. Random = ambíguo → depende do score
-        if accept_all.accept_all_score >= 0.4:
-            return _build_result(
-                status=EmailStatus.ACCEPT_ALL,
-                normalized_reason="catch_all_likely",
-                outcome=real_outcome,
-                confidence=60,
-                provider=provider,
-                accept_all_score=accept_all.accept_all_score,
-            )
-
-        # 4e. Sem evidência forte de catch-all → VALID
+        # 4d. Random ambíguo ou score insuficiente → VALID
+        #     (não promover para ACCEPT_ALL sem random accepted)
         return _build_result(
             status=EmailStatus.VALID,
             normalized_reason="accepted_recipient",
@@ -584,22 +587,41 @@ def _fingerprint_provider(mx_host: str) -> str:
 # SMTP PROBE (baixo nível)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _to_str(value) -> str:
+    """Converte bytes ou qualquer valor para string."""
+    if isinstance(value, bytes):
+        return value.decode(errors="ignore").strip()
+    return str(value).strip()
+
+
 def _smtp_connect_and_rcpt(
     email: str, mx_host: str, port: int, from_email: str, helo: str
 ) -> SmtpOutcome:
-    """Executa uma única conexão SMTP e retorna o outcome normalizado."""
+    """
+    Executa uma única conexão SMTP capturando EHLO, MAIL FROM e RCPT TO.
+    Se EHLO ou MAIL FROM falharem (>= 400), retorna imediatamente.
+    """
     try:
         smtp = smtplib.SMTP(mx_host, port, timeout=SMTP_TIMEOUT)
         with smtp:
-            smtp.ehlo(helo)
-            smtp.mail(from_email)
+            # ── EHLO ────────────────────────────────────────────────
+            ehlo_code, ehlo_msg = smtp.ehlo(helo)
+            ehlo_str = _to_str(ehlo_msg)
+            logger.debug(f"EHLO {helo} via {mx_host}:{port} -> {ehlo_code}")
+            if ehlo_code >= 400:
+                return normalize_smtp_outcome(code=ehlo_code, message=ehlo_str)
+
+            # ── MAIL FROM ───────────────────────────────────────────
+            mail_code, mail_msg = smtp.mail(from_email)
+            mail_str = _to_str(mail_msg)
+            logger.debug(f"MAIL FROM <{from_email}> via {mx_host}:{port} -> {mail_code}")
+            if mail_code >= 400:
+                return normalize_smtp_outcome(code=mail_code, message=mail_str)
+
+            # ── RCPT TO ─────────────────────────────────────────────
             code, message = smtp.rcpt(email)
-            msg_str = (
-                message.decode(errors="ignore")
-                if isinstance(message, bytes)
-                else str(message)
-            ).strip()
-            logger.debug(f"SMTP {email} via {mx_host}:{port} -> {code} {msg_str}")
+            msg_str = _to_str(message)
+            logger.debug(f"RCPT {email} via {mx_host}:{port} -> {code} {msg_str}")
             return normalize_smtp_outcome(code=code, message=msg_str)
     except Exception as e:
         logger.debug(f"SMTP {email} via {mx_host}:{port} -> EXCEPTION {e}")
@@ -608,7 +630,7 @@ def _smtp_connect_and_rcpt(
 
 def _smtp_probe_with_retry(
     email: str, mx_host: str, port: int, from_email: str, helo: str,
-    max_retries: int = 2,
+    max_retries: int = 3,
 ) -> SmtpOutcome:
     """Probe com backoff exponencial + jitter para falhas temporárias."""
     outcome = _smtp_connect_and_rcpt(email, mx_host, port, from_email, helo)
@@ -616,11 +638,39 @@ def _smtp_probe_with_retry(
     for attempt in range(1, max_retries + 1):
         if not should_retry(outcome):
             break
-        # Backoff: 3s, 7s, 15s... com jitter
         delay = (2 ** attempt) + random.uniform(0.5, 2.0)
         logger.debug(f"Retry {attempt}/{max_retries} em {delay:.1f}s para {email}@{mx_host}")
         time.sleep(delay)
         outcome = _smtp_connect_and_rcpt(email, mx_host, port, from_email, helo)
+
+    return outcome
+
+
+def _smtp_probe_with_identity_fallback(
+    email: str, mx_host: str, port: int,
+    from_candidates: List[str], helo_candidates: List[str],
+    max_retries: int = 3,
+) -> SmtpOutcome:
+    """
+    Tenta probe com a primeira identidade. Se cair em policy_block/sender_blocked,
+    tenta a segunda identidade antes de desistir. No máximo 2 combinações.
+    """
+    identities = list(zip(from_candidates, helo_candidates))[:2]
+
+    for i, (from_email, helo) in enumerate(identities):
+        outcome = _smtp_probe_with_retry(
+            email, mx_host, port, from_email, helo, max_retries=max_retries
+        )
+        # Se não foi bloqueio de policy/sender, retorna direto
+        if not outcome.policy_block:
+            return outcome
+        # Se foi bloqueio e ainda temos identidades, tenta a próxima
+        if i < len(identities) - 1:
+            logger.debug(
+                f"Identity fallback: {from_email}/{helo} bloqueada, "
+                f"tentando próxima para {email}@{mx_host}"
+            )
+            continue
 
     return outcome
 
@@ -693,6 +743,11 @@ def verify_email(email: str) -> Dict:
     return _orchestrate_smtp(email, domain, mx_hosts)
 
 
+def _parse_identity_list(raw: str) -> List[str]:
+    """Converte string separada por vírgula em lista."""
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 def _orchestrate_smtp(email: str, domain: str, mx_hosts: list) -> Dict:
     """Orquestra probe real, probe randômico e decisão final."""
     from app.database import SessionLocal
@@ -700,12 +755,26 @@ def _orchestrate_smtp(email: str, domain: str, mx_hosts: list) -> Dict:
 
     db = SessionLocal()
     try:
-        smtp_from = settings_service.get_setting(db, "smtp_from_email", "verify@emailcheck.brazil")
-        smtp_helo = settings_service.get_setting(db, "smtp_helo_hostname", "mail.emailcheck.local")
+        # ── Identidades SMTP (com suporte a fallback) ───────────────
+        from_raw = settings_service.get_setting(db, "smtp_from_email", "verify@emailcheck.brazil")
+        helo_raw = settings_service.get_setting(db, "smtp_helo_hostname", "mail.emailcheck.local")
+        from_candidates = _parse_identity_list(from_raw)
+        helo_candidates = _parse_identity_list(helo_raw)
+        # Garantir pelo menos 1 e alinhar tamanhos
+        if not from_candidates:
+            from_candidates = ["verify@emailcheck.brazil"]
+        if not helo_candidates:
+            helo_candidates = ["mail.emailcheck.local"]
+        while len(helo_candidates) < len(from_candidates):
+            helo_candidates.append(helo_candidates[-1])
+        while len(from_candidates) < len(helo_candidates):
+            from_candidates.append(from_candidates[-1])
+
         provider = _fingerprint_provider(mx_hosts[0])
 
-        # Cache de accept-all por domínio
-        if domain_service.check_accept_all_cache(db, domain):
+        # ── Cache tri-state de accept-all ────────────────────────────
+        cached_aa = domain_service.get_accept_all_cache(db, domain)
+        if cached_aa is True:
             return {
                 "status": EmailStatus.ACCEPT_ALL,
                 "reason": "Server is catch-all (cached)",
@@ -719,22 +788,28 @@ def _orchestrate_smtp(email: str, domain: str, mx_hosts: list) -> Dict:
                 "accept_all_score": 1.0,
             }
 
-        # ── Probe do endereço real ──────────────────────────────────
+        # ── Probe do endereço real (até 4 MX, com identity fallback) ──
         real_outcome = None
+        best_soft = None
         used_mx = None
-        for mx_host in mx_hosts[:2]:
-            real_outcome = _smtp_probe_with_retry(
-                email, mx_host, 25, smtp_from, smtp_helo
+        for mx_host in mx_hosts[:4]:
+            outcome = _smtp_probe_with_identity_fallback(
+                email, mx_host, 25, from_candidates, helo_candidates,
+                max_retries=3,
             )
-            used_mx = mx_host
-            # Se temos um resultado definitivo (aceito ou rejeição clara), paramos
-            if real_outcome.outcome_type in ("accepted", "invalid_recipient"):
+            # Resultado definitivo → parar
+            if outcome.outcome_type in ("accepted", "invalid_recipient"):
+                real_outcome = outcome
+                used_mx = mx_host
                 break
-            # Se falha técnica/policy, tentamos o próximo MX
-            if real_outcome.technical_failure or real_outcome.policy_block:
-                continue
-            # Ambíguo → paramos também (não adianta tentar outro MX)
-            break
+            # Soft outcome → guardar como candidato e continuar
+            if best_soft is None:
+                best_soft = outcome
+                used_mx = mx_host
+            continue
+
+        if real_outcome is None:
+            real_outcome = best_soft
 
         if real_outcome is None:
             return {
@@ -751,16 +826,29 @@ def _orchestrate_smtp(email: str, domain: str, mx_hosts: list) -> Dict:
             }
 
         # ── Decisão rápida se não precisa de accept-all ─────────────
-        # Se real NÃO foi aceito, decidimos direto (sem probe randômico)
         if real_outcome.outcome_type != "accepted":
             result = decide_final_status(real_outcome, provider=provider)
             result["provider"] = provider
             return result
 
+        # ── Cache negativo: se já sabemos que NÃO é catch-all ───────
+        if cached_aa is False:
+            result = _build_result(
+                status=EmailStatus.VALID,
+                normalized_reason="accepted_recipient",
+                outcome=real_outcome,
+                confidence=92,
+                provider=provider,
+                accept_all_score=0.0,
+            )
+            result["provider"] = provider
+            return result
+
         # ── Probe randômico para detecção de catch-all ──────────────
         fake_email = f"__probe__{uuid.uuid4().hex[:12]}__@{domain}"
-        random_outcome = _smtp_probe_with_retry(
-            fake_email, used_mx, 25, smtp_from, smtp_helo, max_retries=1
+        random_outcome = _smtp_probe_with_identity_fallback(
+            fake_email, used_mx, 25, from_candidates, helo_candidates,
+            max_retries=2,
         )
 
         accept_all_info = detect_accept_all_behavior(real_outcome, random_outcome)

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.models import DomainStat
 import time
 import logging
+from typing import Optional
 from app.services import settings_service
 
 logger = logging.getLogger(__name__)
@@ -49,18 +50,26 @@ def wait_for_domain_cooldown(db: Session, domain: str, cooldown_seconds: float =
             return # Prossegue mesmo com erro para não travar o sistema
 
 
-def check_accept_all_cache(db: Session, domain: str) -> bool:
+def get_accept_all_cache(db: Session, domain: str) -> Optional[bool]:
     """
-    Verifica se o domínio está marcado como ACCEPT_ALL no cache.
-    Retorna True se for catch-all e o cache ainda for válido (7 dias).
+    Verifica se o domínio está marcado no cache de accept-all (tri-state).
+    Retorna:
+    - True: se for catch-all confirmado e válido.
+    - False: se for confirmado que NÃO é catch-all e válido.
+    - None: se não houver informação ou o cache expirou.
     """
     from datetime import timedelta
     stat = db.query(DomainStat).filter_by(domain=domain).first()
-    if stat and stat.is_accept_all and stat.accept_all_checked_at:
+    if stat and stat.accept_all_checked_at:
         # TTL de 7 dias para Accept-All
         if datetime.utcnow() < stat.accept_all_checked_at + timedelta(days=7):
-            return True
-    return False
+            return bool(stat.is_accept_all)
+    return None
+
+
+def check_accept_all_cache(db: Session, domain: str) -> bool:
+    """Mantido para compatibilidade, mas prefira get_accept_all_cache."""
+    return get_accept_all_cache(db, domain) is True
 
 
 def set_accept_all(db: Session, domain: str, is_accept_all: bool):
