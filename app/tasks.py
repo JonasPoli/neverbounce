@@ -74,7 +74,15 @@ def process_list_task(list_id: int):
                 if not force_check:
                     cached = cache_service.get_cached(thread_db, item.email)
                     if cached:
-                        _update_item(thread_db, item.id, cached.status, cached.reason or "")
+                        cached_result = {
+                            "status": cached.status,
+                            "reason": cached.reason or "",
+                            "technical_status": cached.technical_status,
+                            "confidence_score": cached.confidence_score or 0,
+                            "smtp_code": cached.smtp_code,
+                            "provider": cached.provider,
+                        }
+                        _update_item(thread_db, item.id, cached_result)
                         logger.debug(f"[cache] {item.email} → {cached.status}")
                         return
 

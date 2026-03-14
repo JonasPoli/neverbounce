@@ -43,7 +43,12 @@ def verify_email(email: str) -> Dict[str, str]:
     """
     # ── Nível 1: Sintaxe ────────────────────────────────────────────────
     if not is_valid_syntax(email):
-        return {"status": EmailStatus.INVALID, "reason": "Invalid syntax"}
+        return {
+            "status": EmailStatus.INVALID,
+            "reason": "Invalid syntax",
+            "technical_status": "INVALID_SYNTAX",
+            "confidence_score": 100
+        }
 
     domain = extract_domain(email)
 
@@ -120,7 +125,6 @@ def _fallback_a_record(domain: str):
 def _check_smtp(email: str, domain: str, mx_hosts: list) -> Dict[str, str]:
     """
     Realiza verificação SMTP nos MX hosts disponíveis.
-    Agora prioriza apenas a porta 25.
     """
     from app.database import SessionLocal
     from app.services import domain_service, settings_service
@@ -151,7 +155,8 @@ def _check_smtp(email: str, domain: str, mx_hosts: list) -> Dict[str, str]:
                 if result["status"] == EmailStatus.VALID:
                     # Se o e-mail foi aceito, verifica ACCEPT_ALL no domínio
                     accept_all = _detect_accept_all(domain, mx_host, 25, smtp_from, smtp_helo)
-                    if accept_all:
+                    # Só marca como ACCEPT_ALL se o teste de catch-all não for inconclusivo
+                    if accept_all == True:
                         domain_service.set_accept_all(db, domain, True)
                         return {
                             "status": EmailStatus.ACCEPT_ALL,
@@ -160,13 +165,22 @@ def _check_smtp(email: str, domain: str, mx_hosts: list) -> Dict[str, str]:
                             "confidence_score": 100,
                             "provider": result["provider"]
                         }
-                    else:
+                    elif accept_all == False:
                         domain_service.set_accept_all(db, domain, False)
-                        result["confidence_score"] = 90 # High confidence for 250
+                        result["confidence_score"] = 90
+                    else: # accept_all == "unknown"
+                        # Se a detecção de catch-all falhou por motivo técnico, 
+                        # prefere UNKNOWN para este e-mail específico também
+                        return {
+                            "status": EmailStatus.UNKNOWN,
+                            "reason": "Catch-all detection ambiguous (blocked or failure)",
+                            "technical_status": "CATCH_ALL_AMBIGUOUS",
+                            "confidence_score": 30
+                        }
                     return result
                 
+                # Se for INVALID, retornamos imediatamente (só vira INVALID se for erro forte)
                 if result["status"] == EmailStatus.INVALID:
-                    result["confidence_score"] = 95 # High confidence for negative
                     return result
                 
                 last_result = result
@@ -187,7 +201,6 @@ def _check_smtp(email: str, domain: str, mx_hosts: list) -> Dict[str, str]:
 def _smtp_probe(email: str, mx_host: str, port: int, from_email: str, helo_hostname: str) -> Optional[Dict[str, str]]:
     """
     Sonda um único servidor SMTP.
-    Retorna dict com status, reason, technical_status, smtp_code.
     """
     def attempt():
         try:
@@ -196,62 +209,99 @@ def _smtp_probe(email: str, mx_host: str, port: int, from_email: str, helo_hostn
                 smtp.ehlo(helo_hostname)
                 smtp.mail(from_email)
                 code, message = smtp.rcpt(email)
-                msg_str = message.decode(errors="ignore") if isinstance(message, bytes) else str(message)
+                msg_str = (message.decode(errors="ignore") if isinstance(message, bytes) else str(message)).strip()
 
                 logger.debug(f"SMTP {email} via {mx_host}:{port} -> {code} {msg_str}")
-
-                if code == 250:
-                    return {
-                        "status": EmailStatus.VALID,
-                        "reason": f"SMTP 250: {msg_str[:80]}",
-                        "technical_status": "MAILBOX_ACCEPTED",
-                        "smtp_code": code
-                    }
-                elif code in (550, 551, 552, 553, 554):
-                    return {
-                        "status": EmailStatus.INVALID,
-                        "reason": f"SMTP {code}: {msg_str[:80]}",
-                        "technical_status": "MAILBOX_NOT_FOUND",
-                        "smtp_code": code
-                    }
-                elif code in (450, 451, 452, 421):
-                    return "greylist"
-                else:
-                    return {
-                        "status": EmailStatus.UNKNOWN,
-                        "reason": f"SMTP {code}: {msg_str[:80]}",
-                        "technical_status": f"SMTP_CODE_{code}",
-                        "smtp_code": code
-                    }
+                
+                return _normalize_smtp_response(code, msg_str)
 
         except smtplib.SMTPConnectError as e:
-            return {"status": EmailStatus.UNKNOWN, "reason": f"Connect error: {str(e)[:50]}", "technical_status": "CONNECTION_ERROR"}
+            return {"status": EmailStatus.UNKNOWN, "reason": f"Connect error: {str(e)[:50]}", "technical_status": "CONNECTION_ERROR", "confidence_score": 0}
         except socket.timeout:
-            return {"status": EmailStatus.UNKNOWN, "reason": "Connection timeout", "technical_status": "SMTP_TIMEOUT"}
+            return {"status": EmailStatus.UNKNOWN, "reason": "Connection timeout", "technical_status": "SMTP_TIMEOUT", "confidence_score": 0}
         except (smtplib.SMTPException, OSError) as e:
             err_str = str(e).lower()
             tech = "SMTP_ERROR"
-            if "blocked" in err_str or "reputation" in err_str:
+            if any(k in err_str for k in ["blocked", "reputation", "blacklist", "spamhaus", "denied"]):
                 tech = "BLOCKED_IP"
-            return {"status": EmailStatus.UNKNOWN, "reason": str(e)[:80], "technical_status": tech}
+            return {"status": EmailStatus.UNKNOWN, "reason": str(e)[:80], "technical_status": tech, "confidence_score": 0}
 
     # Primeira tentativa
     result = attempt()
 
-    # Se for Greylisting, espera 5 segundos e tenta de novo
-    if result == "greylist":
+    # Se for "retry" (greylist ou falha temporária), espera e tenta de novo
+    if result == "retry":
         import time
         time.sleep(5)
         result = attempt()
-        if result == "greylist":
+        if result == "retry":
             return {
                 "status": EmailStatus.UNKNOWN,
-                "reason": "Greylisting persistent",
-                "technical_status": "GREYLISTED",
-                "smtp_code": 451
+                "reason": "Persistent temporary failure (Greylisting/RateLimit)",
+                "technical_status": "DEFERRED",
+                "confidence_score": 20
             }
     
     return result
+
+
+def _normalize_smtp_response(code: int, message: str) -> Dict[str, str]:
+    """
+    Normaliza a resposta SMTP para VALID, INVALID ou UNKNOWN.
+    Evita falsos INVALIDs transformando ambiguidades em UNKNOWN.
+    """
+    msg = message.lower()
+    
+    # ── Sucesso Real ────────────────────────────────────────────────
+    if code == 250:
+        return {
+            "status": EmailStatus.VALID,
+            "reason": f"Success: {message[:80]}",
+            "technical_status": "MAILBOX_ACCEPTED",
+            "smtp_code": code,
+            "confidence_score": 90
+        }
+
+    # ── Erros Temporários / Greylisting ──────────────────────────────
+    if code in (450, 451, 452, 421) or any(k in msg for k in ["try again", "rate limit", "too many", "temporary"]):
+        return "retry"
+
+    # ── Erros de Rejeição por Política/Reputação (Vira UNKNOWN) ──────
+    # Muitas vezes erros 550 ou 554 são bloqueios de IP ou Spam Filter
+    if any(k in msg for k in ["blocked", "reputation", "blacklist", "spamhaus", "dnsbl", "filter", "denied", "policy", "helo", "ptr"]):
+        return {
+            "status": EmailStatus.UNKNOWN,
+            "reason": f"Blocked/Policy: {message[:80]}",
+            "technical_status": "BLOCKED_OR_POLICY",
+            "smtp_code": code,
+            "confidence_score": 10
+        }
+
+    # ── Erros Definitivos (Vira INVALID) ──────────────────────────────
+    # Apenas se contiver palavras-chave fortes de inexistência
+    invalid_keywords = [
+        "no such user", "does not exist", "mailbox unavailable", 
+        "recipient rejected", "user unknown", "not found", 
+        "invalid recipient", "account is disabled"
+    ]
+    if code >= 500 and any(k in msg for k in invalid_keywords):
+        return {
+            "status": EmailStatus.INVALID,
+            "reason": f"Invalid: {message[:80]}",
+            "technical_status": "MAILBOX_NOT_FOUND",
+            "smtp_code": code,
+            "confidence_score": 95
+        }
+
+    # ── Em caso de dúvida, retorne UNKNOWN ───────────────────────────
+    # Se caiu num 5xx mas não identificamos o motivo exato, não arriscamos INVALID
+    return {
+        "status": EmailStatus.UNKNOWN,
+        "reason": f"Ambiguous SMTP {code}: {message[:80]}",
+        "technical_status": f"SMTP_UNCERTAIN_{code}",
+        "smtp_code": code,
+        "confidence_score": 30
+    }
 
 
 def _fingerprint_provider(mx_host: str) -> str:
@@ -274,25 +324,34 @@ def _fingerprint_provider(mx_host: str) -> str:
 # Heurística ACCEPT_ALL
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _detect_accept_all(domain: str, mx_host: str, port: int, from_email: str, helo: str) -> bool:
+def _detect_accept_all(domain: str, mx_host: str, port: int, from_email: str, helo: str) -> any:
     """
     Detecta se o servidor aceita qualquer destinatário.
     Usa dois e-mails aleatórios para maior segurança.
+    Retorna: True (catch-all), False (rejeitou fakes), "unknown" (bloqueio/erro).
     """
     try:
         # Primeiro probe
         fake1 = random_email_for_domain(domain)
         res1 = _smtp_probe(fake1, mx_host, port, from_email, helo)
         
-        if res1 and res1["status"] == EmailStatus.VALID:
+        # Se for bloqueio ou falha técnica no probe do fake, não podemos decidir
+        if not res1 or res1["status"] == EmailStatus.UNKNOWN:
+            return "unknown"
+
+        if res1["status"] == EmailStatus.VALID:
             # Segundo probe para confirmar
             fake2 = random_email_for_domain(domain)
             res2 = _smtp_probe(fake2, mx_host, port, from_email, helo)
             
-            if res2 and res2["status"] == EmailStatus.VALID:
+            if not res2 or res2["status"] == EmailStatus.UNKNOWN:
+                return "unknown"
+
+            if res2["status"] == EmailStatus.VALID:
                 logger.info(f"ACCEPT_ALL confirmado em {domain}")
                 return True
+        
         return False
     except Exception as e:
         logger.warning(f"Erro na heurística ACCEPT_ALL para {domain}: {e}")
-        return False
+        return "unknown"
