@@ -114,7 +114,8 @@ def startup_event():
             # Extrai primitivos enquanto a sessão ainda está aberta
             stuck_ids.append((lst.id, lst.name))
             list_service.update_list_status(_db, lst.id, "PENDING")
-            _db.query(EmailList).filter_by(id=lst.id).update({"processed_count": 0})
+            # Sincroniza contador real em vez de zerar
+            list_service.sync_processed_count(_db, lst.id)
             _db.query(ListItem).filter(
                 ListItem.list_id == lst.id,
                 ListItem.status.is_(None),
@@ -267,7 +268,7 @@ async def upload_submit(
 
     logger.info(
         f"Lista '{list_name}' criada (id={email_list.id}, "
-        f"{len(emails)} e-mails, force_check={force_check}, workers={workers_clamped})"
+        f"{len(emails)} e-mails, force_check={force_check}, workers={workers_global})"
     )
 
     # Redireciona para a página de detalhes

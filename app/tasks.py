@@ -39,6 +39,8 @@ def process_list_task(list_id: int):
 
     try:
         list_service.update_list_status(db, list_id, ListStatus.PROCESSING)
+        # Sincroniza contador antes de iniciar para garantir base correta
+        list_service.sync_processed_count(db, list_id)
         email_list = list_service.get_list(db, list_id)
 
         if not email_list:
@@ -54,8 +56,12 @@ def process_list_task(list_id: int):
             f"({email_list.total_emails} e-mails, force_check={force_check})"
         )
 
-        # Carrega todos os itens de uma vez
-        items = db.query(ListItem).filter(ListItem.list_id == list_id).all()
+        # Carrega apenas itens pendentes (status IS NULL)
+        # Isso evita re-processar itens já finalizados e quebrar o contador processed_count
+        items = db.query(ListItem).filter(
+            ListItem.list_id == list_id,
+            ListItem.status.is_(None)
+        ).all()
 
         def process_item(item: ListItem) -> None:
             """
@@ -79,18 +85,22 @@ def process_list_task(list_id: int):
                     domain_service.wait_for_domain_cooldown(thread_db, domain)
 
                 result = verify_email(item.email)
-                status = result["status"]
-                reason = result["reason"]
-
+                
                 # Salva no cache global e no item da lista
-                cache_service.save_to_cache(thread_db, item.email, status, reason)
-                _update_item(thread_db, item.id, status, reason)
-                logger.debug(f"[verify] {item.email} → {status}")
+                cache_service.save_to_cache(thread_db, item.email, result)
+                _update_item(thread_db, item.id, result)
+                logger.debug(f"[verify] {item.email} → {result['status']} (score: {result.get('confidence_score')})")
 
             except Exception as e:
                 logger.error(f"Erro ao processar {item.email}: {e}", exc_info=True)
                 try:
-                    _update_item(thread_db, item.id, "UNKNOWN", f"Processing error: {str(e)[:100]}")
+                    error_result = {
+                        "status": "UNKNOWN",
+                        "reason": f"Processing error: {str(e)[:100]}",
+                        "technical_status": "PROCESSING_ERROR",
+                        "confidence_score": 0
+                    }
+                    _update_item(thread_db, item.id, error_result)
                 except Exception:
                     pass
             finally:
@@ -115,6 +125,8 @@ def process_list_task(list_id: int):
                     logger.error(f"Exceção não tratada em thread: {e}", exc_info=True)
 
         # ── Finaliza com sucesso ─────────────────────────────────────
+        # Sincroniza contador ao final para garantir precisão de 100%
+        list_service.sync_processed_count(db, list_id)
         list_service.update_list_status(db, list_id, ListStatus.COMPLETED)
         logger.info(f"Lista {list_id} concluída.")
 
@@ -128,10 +140,17 @@ def process_list_task(list_id: int):
         db.close()
 
 
-def _update_item(db: Session, item_id: int, status: str, reason: str) -> None:
+def _update_item(db: Session, item_id: int, result: dict) -> None:
     """Atualiza o status de um ListItem com retry simples para evitar 'database is locked'."""
     from sqlalchemy import text
     import time
+
+    status = result.get("status")
+    reason = result.get("reason")
+    tech_status = result.get("technical_status")
+    score = result.get("confidence_score", 0)
+    code = result.get("smtp_code")
+    provider = result.get("provider")
 
     max_retries = 5
     for attempt in range(max_retries):
@@ -139,9 +158,20 @@ def _update_item(db: Session, item_id: int, status: str, reason: str) -> None:
             db.execute(
                 text(
                     "UPDATE list_items SET status = :status, reason = :reason, "
+                    "technical_status = :tech, confidence_score = :score, "
+                    "smtp_code = :code, provider = :provider, "
                     "checked_at = :now WHERE id = :id"
                 ),
-                {"status": status, "reason": reason, "now": datetime.utcnow(), "id": item_id},
+                {
+                    "status": status,
+                    "reason": reason,
+                    "tech": tech_status,
+                    "score": score,
+                    "code": code,
+                    "provider": provider,
+                    "now": datetime.utcnow(),
+                    "id": item_id
+                },
             )
             db.commit()
             return  # Sucesso

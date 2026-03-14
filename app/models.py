@@ -45,9 +45,15 @@ class GlobalCache(Base):
     status = Column(String, nullable=False)          # VALID | INVALID | UNKNOWN | ACCEPT_ALL
     reason = Column(Text, nullable=True)             # Motivo técnico resumido
     last_checked = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    # Novos campos para profundidade analítica
+    confidence_score = Column(Integer, default=0)    # 0 a 100
+    technical_status = Column(String, nullable=True) # Ex: BLOCKED_IP, MAILBOX_NOT_FOUND
+    smtp_code = Column(Integer, nullable=True)
+    provider = Column(String, nullable=True)         # Ex: GMAIL, OUTLOOK
 
     def __repr__(self):
-        return f"<GlobalCache email={self.email} status={self.status}>"
+        return f"<GlobalCache email={self.email} status={self.status} score={self.confidence_score}>"
 
 
 # ──────────────────────────────────────────────
@@ -94,11 +100,17 @@ class ListItem(Base):
     reason = Column(Text, nullable=True)
     checked_at = Column(DateTime, nullable=True)
 
+    # Novos campos para profundidade analítica (espelham o cache)
+    confidence_score = Column(Integer, default=0)
+    technical_status = Column(String, nullable=True)
+    smtp_code = Column(Integer, nullable=True)
+    provider = Column(String, nullable=True)
+
     # Relacionamento N:1 com a lista
     email_list = relationship("EmailList", back_populates="items")
 
     def __repr__(self):
-        return f"<ListItem email={self.email} status={self.status}>"
+        return f"<ListItem email={self.email} status={self.status} score={self.confidence_score}>"
 
 
 # ──────────────────────────────────────────────
@@ -131,6 +143,10 @@ class DomainStat(Base):
 
     domain = Column(String, primary_key=True)
     last_contact = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Cache de Accept-All por domínio
+    is_accept_all = Column(Boolean, default=False)
+    accept_all_checked_at = Column(DateTime, nullable=True)
 
     def __repr__(self):
-        return f"<DomainStat domain={self.domain} last_contact={self.last_contact}>"
+        return f"<DomainStat domain={self.domain} last_contact={self.last_contact} accept_all={self.is_accept_all}>"

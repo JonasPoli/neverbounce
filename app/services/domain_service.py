@@ -47,3 +47,29 @@ def wait_for_domain_cooldown(db: Session, domain: str, cooldown_seconds: float =
                 continue
             logger.warning(f"Erro ao gerenciar cooldown para {domain}: {e}")
             return # Prossegue mesmo com erro para não travar o sistema
+
+
+def check_accept_all_cache(db: Session, domain: str) -> bool:
+    """
+    Verifica se o domínio está marcado como ACCEPT_ALL no cache.
+    Retorna True se for catch-all e o cache ainda for válido (7 dias).
+    """
+    from datetime import timedelta
+    stat = db.query(DomainStat).filter_by(domain=domain).first()
+    if stat and stat.is_accept_all and stat.accept_all_checked_at:
+        # TTL de 7 dias para Accept-All
+        if datetime.utcnow() < stat.accept_all_checked_at + timedelta(days=7):
+            return True
+    return False
+
+
+def set_accept_all(db: Session, domain: str, is_accept_all: bool):
+    """Atualiza o status de accept-all para um domínio."""
+    stat = db.query(DomainStat).filter_by(domain=domain).first()
+    if not stat:
+        stat = DomainStat(domain=domain, last_contact=datetime.utcnow())
+        db.add(stat)
+    
+    stat.is_accept_all = is_accept_all
+    stat.accept_all_checked_at = datetime.utcnow()
+    db.commit()

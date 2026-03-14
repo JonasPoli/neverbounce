@@ -100,8 +100,33 @@ def update_list_status(db: Session, list_id: int, status: str):
     db.commit()
 
 
+def sync_processed_count(db: Session, list_id: int):
+    """
+    Recalcula o processed_count baseado no número real de registros com status.
+    Útil para corrigir inconsistências após falhas ou reprocessamentos.
+    """
+    from sqlalchemy import func
+    from app.models import EmailList, ListItem
+    
+    # Conta itens que já têm um status (foram verificados ou vieram do cache)
+    count = db.query(func.count(ListItem.id)).filter(
+        ListItem.list_id == list_id,
+        ListItem.status.isnot(None)
+    ).scalar() or 0
+    
+    # Atualiza a lista
+    db.query(EmailList).filter(EmailList.id == list_id).update({
+        "processed_count": count,
+        "updated_at": datetime.utcnow()
+    })
+    db.commit()
+
+
 def increment_processed(db: Session, list_id: int):
-    """Incrementa o contador de e-mails processados de forma segura."""
+    """
+    Incrementa o contador de e-mails processados de forma segura.
+    Usado durante o processamento paralelo para atualização em tempo real.
+    """
     from sqlalchemy import text
     db.execute(
         text("UPDATE lists SET processed_count = processed_count + 1, updated_at = :now WHERE id = :id"),
@@ -140,13 +165,18 @@ def reset_unknown_items(db: Session, list_id: int) -> int:
     
     count = len(unknown_items)
     if count > 0:
-        # Reseta itens
+        # 1. Limpa cache global para esses e-mails (garante re-verificação SMTP)
+        from app.models import GlobalCache
+        emails_to_clear = [item.email for item in unknown_items]
+        db.query(GlobalCache).filter(GlobalCache.email.in_(emails_to_clear)).delete(synchronize_session=False)
+
+        # 2. Reseta itens
         for item in unknown_items:
             item.status = None
             item.reason = None
             item.checked_at = None
         
-        # Ajusta processed_count da lista (decrementa o que vai ser reprocessado)
+        # 3. Ajusta processed_count da lista (decrementa o que vai ser reprocessado)
         db.query(EmailList).filter(EmailList.id == list_id).update({
             "processed_count": EmailList.processed_count - count,
             "updated_at": datetime.utcnow()

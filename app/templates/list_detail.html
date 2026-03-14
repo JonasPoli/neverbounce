@@ -55,7 +55,6 @@
   </div>
 
   <!-- Botão de exportação -->
-  {% if email_list.status == 'COMPLETED' %}
   <a href="/lists/{{ email_list.id }}/export"
      class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium transition-colors flex-shrink-0">
     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -63,7 +62,6 @@
     </svg>
     Exportar CSV
   </a>
-  {% endif %}
 </div>
 
 <!-- ── Barra de progresso com ETA ───────────────────────────────── -->
