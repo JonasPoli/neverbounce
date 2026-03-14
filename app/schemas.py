@@ -17,6 +17,15 @@ class ListItemOut(BaseModel):
     email: str
     status: Optional[str] = None
     reason: Optional[str] = None
+    normalized_reason: Optional[str] = None
+    technical_status: Optional[str] = None
+    confidence_score: Optional[int] = 0
+    smtp_code: Optional[int] = None
+    provider: Optional[str] = None
+    technical_failure: Optional[bool] = False
+    policy_block: Optional[bool] = False
+    retryable: Optional[bool] = False
+    accept_all_score: Optional[str] = None
     checked_at: Optional[datetime] = None
 
     class Config:
@@ -58,4 +67,7 @@ class VerificationResult(BaseModel):
     email: str
     status: str
     reason: str
+    normalized_reason: Optional[str] = None
+    technical_status: Optional[str] = None
+    confidence_score: Optional[int] = 0
     from_cache: bool = False

@@ -46,11 +46,17 @@ class GlobalCache(Base):
     reason = Column(Text, nullable=True)             # Motivo técnico resumido
     last_checked = Column(DateTime, default=datetime.utcnow, nullable=False)
     
-    # Novos campos para profundidade analítica
+    # Campos de profundidade analítica
     confidence_score = Column(Integer, default=0)    # 0 a 100
-    technical_status = Column(String, nullable=True) # Ex: BLOCKED_IP, MAILBOX_NOT_FOUND
+    technical_status = Column(String, nullable=True) # Ex: POLICY_BLOCK, INVALID_RECIPIENT
     smtp_code = Column(Integer, nullable=True)
-    provider = Column(String, nullable=True)         # Ex: GMAIL, OUTLOOK
+    provider = Column(String, nullable=True)         # Ex: GOOGLE, MICROSOFT
+    # Campos de rastreabilidade
+    normalized_reason = Column(String, nullable=True) # Ex: smtp_policy_block, invalid_recipient
+    technical_failure = Column(Boolean, default=False)
+    retryable = Column(Boolean, default=False)
+    policy_block = Column(Boolean, default=False)
+    accept_all_score = Column(String, nullable=True)  # float como string para SQLite
 
     def __repr__(self):
         return f"<GlobalCache email={self.email} status={self.status} score={self.confidence_score}>"
@@ -100,11 +106,17 @@ class ListItem(Base):
     reason = Column(Text, nullable=True)
     checked_at = Column(DateTime, nullable=True)
 
-    # Novos campos para profundidade analítica (espelham o cache)
+    # Campos de profundidade analítica (espelham o cache)
     confidence_score = Column(Integer, default=0)
     technical_status = Column(String, nullable=True)
     smtp_code = Column(Integer, nullable=True)
     provider = Column(String, nullable=True)
+    # Campos de rastreabilidade
+    normalized_reason = Column(String, nullable=True)
+    technical_failure = Column(Boolean, default=False)
+    retryable = Column(Boolean, default=False)
+    policy_block = Column(Boolean, default=False)
+    accept_all_score = Column(String, nullable=True)
 
     # Relacionamento N:1 com a lista
     email_list = relationship("EmailList", back_populates="items")

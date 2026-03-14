@@ -38,13 +38,24 @@ def export_list_to_csv(list_id: int, list_name: str, items: List[ListItem]) -> s
     with open(filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         # Cabeçalho
-        writer.writerow(["email", "status", "reason", "checked_at"])
+        writer.writerow([
+            "email", "status", "reason", "normalized_reason",
+            "technical_status", "confidence_score", "smtp_code",
+            "provider", "technical_failure", "policy_block", "checked_at"
+        ])
         # Linhas de dados
         for item in items:
             writer.writerow([
                 item.email,
                 item.status or "",
                 item.reason or "",
+                getattr(item, "normalized_reason", "") or "",
+                getattr(item, "technical_status", "") or "",
+                getattr(item, "confidence_score", 0) or 0,
+                getattr(item, "smtp_code", "") or "",
+                getattr(item, "provider", "") or "",
+                getattr(item, "technical_failure", False),
+                getattr(item, "policy_block", False),
                 item.checked_at.isoformat() if item.checked_at else "",
             ])
 

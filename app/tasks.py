@@ -32,14 +32,12 @@ def process_list_task(list_id: int):
     """
     Função chamada pelo BackgroundTasks do FastAPI.
     Processa a lista em paralelo usando ThreadPoolExecutor.
-    O número de workers é lido do campo EmailList.workers.
     """
     db: Session = SessionLocal()
-    lock = threading.Lock()  # Lock para incrementos de contador thread-safe
+    lock = threading.Lock()
 
     try:
         list_service.update_list_status(db, list_id, ListStatus.PROCESSING)
-        # Sincroniza contador antes de iniciar para garantir base correta
         list_service.sync_processed_count(db, list_id)
         email_list = list_service.get_list(db, list_id)
 
@@ -48,7 +46,7 @@ def process_list_task(list_id: int):
             return
 
         workers = settings_service.get_workers_count(db)
-        workers = max(1, min(workers, 20))  # Clamp: 1–20
+        workers = max(1, min(workers, 20))
         force_check = email_list.force_check
 
         logger.info(
@@ -56,21 +54,15 @@ def process_list_task(list_id: int):
             f"({email_list.total_emails} e-mails, force_check={force_check})"
         )
 
-        # Carrega apenas itens pendentes (status IS NULL)
-        # Isso evita re-processar itens já finalizados e quebrar o contador processed_count
         items = db.query(ListItem).filter(
             ListItem.list_id == list_id,
             ListItem.status.is_(None)
         ).all()
 
         def process_item(item: ListItem) -> None:
-            """
-            Processa um único e-mail em sua própria thread.
-            Usa sessão de banco EXCLUSIVA por thread — nunca compartilha a sessão principal.
-            """
             thread_db = SessionLocal()
             try:
-                # ── Etapa 1: Cache global ────────────────────────────────
+                # ── Etapa 1: Cache global ────────────────────────────
                 if not force_check:
                     cached = cache_service.get_cached(thread_db, item.email)
                     if cached:
@@ -81,23 +73,30 @@ def process_list_task(list_id: int):
                             "confidence_score": cached.confidence_score or 0,
                             "smtp_code": cached.smtp_code,
                             "provider": cached.provider,
+                            "normalized_reason": cached.normalized_reason,
+                            "technical_failure": bool(cached.technical_failure),
+                            "retryable": bool(cached.retryable),
+                            "policy_block": bool(cached.policy_block),
+                            "accept_all_score": float(cached.accept_all_score or 0),
                         }
                         _update_item(thread_db, item.id, cached_result)
                         logger.debug(f"[cache] {item.email} → {cached.status}")
                         return
 
-                # ── Etapas 2-4: Verificação real ─────────────────────────
-                # Respeita o cooldown por domínio antes de contatar o servidor via SMTP
+                # ── Etapas 2-4: Verificação real ─────────────────────
                 domain = extract_domain(item.email)
                 if domain:
                     domain_service.wait_for_domain_cooldown(thread_db, domain)
 
                 result = verify_email(item.email)
                 
-                # Salva no cache global e no item da lista
                 cache_service.save_to_cache(thread_db, item.email, result)
                 _update_item(thread_db, item.id, result)
-                logger.debug(f"[verify] {item.email} → {result['status']} (score: {result.get('confidence_score')})")
+                logger.debug(
+                    f"[verify] {item.email} → {result['status']} "
+                    f"(reason={result.get('normalized_reason')}, "
+                    f"score={result.get('confidence_score')})"
+                )
 
             except Exception as e:
                 logger.error(f"Erro ao processar {item.email}: {e}", exc_info=True)
@@ -105,15 +104,18 @@ def process_list_task(list_id: int):
                     error_result = {
                         "status": "UNKNOWN",
                         "reason": f"Processing error: {str(e)[:100]}",
+                        "normalized_reason": "processing_error",
                         "technical_status": "PROCESSING_ERROR",
-                        "confidence_score": 0
+                        "confidence_score": 0,
+                        "technical_failure": True,
+                        "retryable": True,
+                        "policy_block": False,
+                        "accept_all_score": 0.0,
                     }
                     _update_item(thread_db, item.id, error_result)
                 except Exception:
                     pass
             finally:
-                # Incrementa contador usando a sessão da própria thread
-                # O lock evita que duas threads atualizem o contador ao mesmo tempo
                 try:
                     with lock:
                         list_service.increment_processed(thread_db, list_id)
@@ -125,7 +127,6 @@ def process_list_task(list_id: int):
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(process_item, item) for item in items]
 
-            # Aguarda conclusão e trata exceções não capturadas
             for future in as_completed(futures):
                 try:
                     future.result()
@@ -133,7 +134,6 @@ def process_list_task(list_id: int):
                     logger.error(f"Exceção não tratada em thread: {e}", exc_info=True)
 
         # ── Finaliza com sucesso ─────────────────────────────────────
-        # Sincroniza contador ao final para garantir precisão de 100%
         list_service.sync_processed_count(db, list_id)
         list_service.update_list_status(db, list_id, ListStatus.COMPLETED)
         logger.info(f"Lista {list_id} concluída.")
@@ -149,43 +149,45 @@ def process_list_task(list_id: int):
 
 
 def _update_item(db: Session, item_id: int, result: dict) -> None:
-    """Atualiza o status de um ListItem com retry simples para evitar 'database is locked'."""
+    """Atualiza o status de um ListItem com retry para 'database is locked'."""
     from sqlalchemy import text
     import time
-
-    status = result.get("status")
-    reason = result.get("reason")
-    tech_status = result.get("technical_status")
-    score = result.get("confidence_score", 0)
-    code = result.get("smtp_code")
-    provider = result.get("provider")
 
     max_retries = 5
     for attempt in range(max_retries):
         try:
             db.execute(
                 text(
-                    "UPDATE list_items SET status = :status, reason = :reason, "
+                    "UPDATE list_items SET "
+                    "status = :status, reason = :reason, "
                     "technical_status = :tech, confidence_score = :score, "
                     "smtp_code = :code, provider = :provider, "
+                    "normalized_reason = :norm_reason, "
+                    "technical_failure = :tech_fail, retryable = :retryable, "
+                    "policy_block = :pol_block, accept_all_score = :aa_score, "
                     "checked_at = :now WHERE id = :id"
                 ),
                 {
-                    "status": status,
-                    "reason": reason,
-                    "tech": tech_status,
-                    "score": score,
-                    "code": code,
-                    "provider": provider,
+                    "status": result.get("status"),
+                    "reason": result.get("reason"),
+                    "tech": result.get("technical_status"),
+                    "score": result.get("confidence_score", 0),
+                    "code": result.get("smtp_code"),
+                    "provider": result.get("provider"),
+                    "norm_reason": result.get("normalized_reason"),
+                    "tech_fail": result.get("technical_failure", False),
+                    "retryable": result.get("retryable", False),
+                    "pol_block": result.get("policy_block", False),
+                    "aa_score": str(result.get("accept_all_score", 0.0)),
                     "now": datetime.utcnow(),
-                    "id": item_id
+                    "id": item_id,
                 },
             )
             db.commit()
-            return  # Sucesso
+            return
         except Exception as e:
             if "locked" in str(e).lower() and attempt < max_retries - 1:
                 db.rollback()
-                time.sleep(0.1 * (attempt + 1))  # Backoff exponencial simples
+                time.sleep(0.1 * (attempt + 1))
                 continue
             raise e
