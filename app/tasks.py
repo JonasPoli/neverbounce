@@ -54,17 +54,28 @@ def process_list_task(list_id: int):
             f"({email_list.total_emails} e-mails, force_check={force_check})"
         )
 
-        items = db.query(ListItem).filter(
+        # Precisamos buscar apenas os dados necessários em vez do objeto ORM completo 
+        # porque o db.commit() iria expirar os objetos (expire_on_commit=True) e o acesso 
+        # ao item.email dentro das threads causaria locks/deadlocks na sessão principal.
+        db_items = db.query(ListItem).filter(
             ListItem.list_id == list_id,
             ListItem.status.is_(None)
         ).all()
+        # Copia dados em memória
+        items_data = [{"id": i.id, "email": i.email} for i in db_items]
+        
+        # Libera conexão da master thread para o pool/banco antes das centenas de chamadas externas 
+        db.expunge_all()
+        db.commit()
 
-        def process_item(item: ListItem) -> None:
+        def process_item(item_data: dict) -> None:
             thread_db = SessionLocal()
+            item_id = item_data["id"]
+            item_email = item_data["email"]
             try:
                 # ── Etapa 1: Cache global ────────────────────────────
                 if not force_check:
-                    cached = cache_service.get_cached(thread_db, item.email)
+                    cached = cache_service.get_cached(thread_db, item_email)
                     if cached:
                         cached_result = {
                             "status": cached.status,
@@ -79,27 +90,30 @@ def process_list_task(list_id: int):
                             "policy_block": bool(cached.policy_block),
                             "accept_all_score": float(cached.accept_all_score or 0),
                         }
-                        _update_item(thread_db, item.id, cached_result)
-                        logger.debug(f"[cache] {item.email} → {cached.status}")
+                        _update_item(thread_db, item_id, cached_result)
+                        logger.debug(f"[cache] {item_email} → {cached.status}")
                         return
 
                 # ── Etapas 2-4: Verificação real ─────────────────────
-                domain = extract_domain(item.email)
+                domain = extract_domain(item_email)
                 if domain:
                     domain_service.wait_for_domain_cooldown(thread_db, domain)
 
-                result = verify_email(item.email)
+                # Libera a transação no SQLite antes de bloquear na verificação SMTP por vários segundos
+                thread_db.commit()
+
+                result = verify_email(item_email)
                 
-                cache_service.save_to_cache(thread_db, item.email, result)
-                _update_item(thread_db, item.id, result)
+                cache_service.save_to_cache(thread_db, item_email, result)
+                _update_item(thread_db, item_id, result)
                 logger.debug(
-                    f"[verify] {item.email} → {result['status']} "
+                    f"[verify] {item_email} → {result['status']} "
                     f"(reason={result.get('normalized_reason')}, "
                     f"score={result.get('confidence_score')})"
                 )
 
             except Exception as e:
-                logger.error(f"Erro ao processar {item.email}: {e}", exc_info=True)
+                logger.error(f"Erro ao processar {item_email}: {e}", exc_info=True)
                 try:
                     error_result = {
                         "status": "UNKNOWN",
@@ -112,7 +126,7 @@ def process_list_task(list_id: int):
                         "policy_block": False,
                         "accept_all_score": 0.0,
                     }
-                    _update_item(thread_db, item.id, error_result)
+                    _update_item(thread_db, item_id, error_result)
                 except Exception:
                     pass
             finally:
@@ -125,7 +139,7 @@ def process_list_task(list_id: int):
 
         # ── Execução paralela ────────────────────────────────────────
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(process_item, item) for item in items]
+            futures = [executor.submit(process_item, item) for item in items_data]
 
             for future in as_completed(futures):
                 try:

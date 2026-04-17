@@ -9,6 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
+from sqlalchemy.pool import NullPool
 
 # Caminho do banco de dados SQLite local
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,6 +20,7 @@ DATABASE_URL = f"sqlite:///{os.path.join(BASE_DIR, 'database.db')}"
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False, "timeout": 30},
+    poolclass=NullPool,
     echo=False,
 )
 

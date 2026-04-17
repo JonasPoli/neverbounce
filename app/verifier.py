@@ -774,6 +774,10 @@ def _orchestrate_smtp(email: str, domain: str, mx_hosts: list) -> Dict:
 
         # ── Cache tri-state de accept-all ────────────────────────────
         cached_aa = domain_service.get_accept_all_cache(db, domain)
+        
+        # Libera a transação no SQLite antes das chamadas de rede lentas (probes)
+        db.commit()
+
         if cached_aa is True:
             return {
                 "status": EmailStatus.ACCEPT_ALL,
